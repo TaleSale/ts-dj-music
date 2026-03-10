@@ -1,0 +1,184 @@
+<div class="ts-dj-music-app">
+  <section class="ts-dj-toolbar">
+    <div class="ts-dj-live-rate">
+      <label>Speed (live)</label>
+      <input type="range" min="0.5" max="2" step="0.25" value="{{liveRate}}" data-action="set-live-rate">
+      <span class="ts-dj-live-rate-value">{{liveRateLabel}}</span>
+      <label class="ts-dj-ambience-toggle">
+        <input type="checkbox" data-action="set-ambience-concurrency" {{#if ambienceAllowConcurrent}}checked{{/if}}>
+        Allow multiple Ambience
+      </label>
+    </div>
+    <div class="ts-dj-status">
+      <div class="ts-dj-settings-actions">
+        <button type="button" data-action="export-settings"><i class="fas fa-file-export"></i> Export</button>
+        <button type="button" data-action="import-settings"><i class="fas fa-file-import"></i> Import</button>
+      </div>
+      <span>{{currentLabel}}</span>
+      {{#if isPlaying}}
+      <button type="button" data-action="stop"><i class="fas fa-stop"></i> Stop</button>
+      {{/if}}
+    </div>
+  </section>
+
+  <section class="ts-dj-sections">
+    <details class="ts-dj-section" open>
+      <summary>Files</summary>
+      <div class="ts-dj-section-body">
+        <article class="ts-dj-card">
+          <header>
+            <h3>Files</h3>
+            <button type="button" data-action="create-file"><i class="fas fa-plus"></i> New</button>
+          </header>
+          <div class="ts-dj-list">
+            {{#if hasFiles}}
+              {{#each files}}
+              <div class="ts-dj-row">
+                <div class="ts-dj-row-main">
+                  <strong>{{name}}</strong>
+                  <div class="meta">{{path}}</div>
+                </div>
+                <div class="ts-dj-actions">
+                  <button type="button" data-action="edit-file" data-id="{{id}}"><i class="fas fa-pen"></i></button>
+                  <button type="button" data-action="delete-file" data-id="{{id}}"><i class="fas fa-trash"></i></button>
+                </div>
+              </div>
+              {{/each}}
+            {{else}}
+              <p class="notes">No files yet.</p>
+            {{/if}}
+          </div>
+        </article>
+      </div>
+    </details>
+
+    <details class="ts-dj-section" open>
+      <summary>Music</summary>
+      <div class="ts-dj-section-body">
+        <div class="ts-dj-grid ts-dj-grid-music">
+          <article class="ts-dj-card">
+            <header>
+              <h3>Playlists</h3>
+              <button type="button" data-action="create-playlist"><i class="fas fa-plus"></i> New</button>
+            </header>
+            <div class="ts-dj-list">
+              {{#if hasPlaylists}}
+                {{#each playlists}}
+                <div class="ts-dj-row {{#if active}}is-active{{/if}}" data-playlist-id="{{id}}">
+                  <div class="ts-dj-row-main">
+                    <strong>{{name}}</strong>
+                    <div class="meta">Tracks: {{trackCount}} | Loop: {{#if loop}}Yes{{else}}No{{/if}} | Shuffle: {{#if shuffle}}Yes{{else}}No{{/if}}</div>
+                    <div class="meta">{{trackNames}}</div>
+                  </div>
+                  <div class="ts-dj-actions">
+                    <button type="button" class="ts-dj-play-toggle" data-action="{{playAction}}" data-id="{{id}}"><i class="fas {{playIcon}}"></i></button>
+                    <button type="button" data-action="toggle-playlist-loop" data-id="{{id}}" class="loop {{#if loop}}is-on{{/if}}" title="Loop"><i class="fas fa-repeat"></i></button>
+                    <button type="button" data-action="toggle-playlist-shuffle" data-id="{{id}}" class="shuffle {{#if shuffle}}is-on{{/if}}" title="Shuffle"><i class="fas fa-random"></i></button>
+                    <button type="button" data-action="edit-playlist" data-id="{{id}}"><i class="fas fa-pen"></i></button>
+                    <button type="button" data-action="delete-playlist" data-id="{{id}}"><i class="fas fa-trash"></i></button>
+                  </div>
+                </div>
+                {{/each}}
+              {{else}}
+                <p class="notes">No playlists yet.</p>
+              {{/if}}
+            </div>
+          </article>
+
+          <article class="ts-dj-card">
+            <header>
+              <h3>Music</h3>
+              <button type="button" data-action="create-track"><i class="fas fa-plus"></i> New</button>
+            </header>
+            <div class="ts-dj-list">
+              {{#if hasTracks}}
+                {{#each tracks}}
+                <div class="ts-dj-row {{#if active}}is-active{{/if}}" data-track-id="{{id}}">
+                  <div class="ts-dj-row-main">
+                    <strong>{{name}}</strong>
+                    <div class="meta">File: {{fileName}}</div>
+                    <div class="meta">Clip: {{startLabel}} - {{endLabel}} | Speed: {{rateLabel}} | Loop: {{#if loop}}Yes{{else}}No{{/if}}</div>
+                  </div>
+                  <div class="ts-dj-actions">
+                    <button type="button" class="ts-dj-play-toggle" data-action="{{playAction}}" data-id="{{id}}"><i class="fas {{playIcon}}"></i></button>
+                    <button type="button" data-action="toggle-track-loop" data-id="{{id}}" class="loop {{#if loop}}is-on{{/if}}" title="Loop"><i class="fas fa-repeat"></i></button>
+                    <button type="button" data-action="edit-track" data-id="{{id}}"><i class="fas fa-pen"></i></button>
+                    <button type="button" data-action="delete-track" data-id="{{id}}"><i class="fas fa-trash"></i></button>
+                  </div>
+                </div>
+                {{/each}}
+              {{else}}
+                <p class="notes">No tracks yet.</p>
+              {{/if}}
+            </div>
+          </article>
+
+        </div>
+      </div>
+    </details>
+
+    <details class="ts-dj-section" open>
+      <summary>Ambience</summary>
+      <div class="ts-dj-section-body">
+        <div class="ts-dj-grid ts-dj-grid-ambience">
+          <article class="ts-dj-card">
+            <header>
+              <h3>Ambience Playlists</h3>
+              <button type="button" data-action="create-ambience-playlist"><i class="fas fa-plus"></i> New</button>
+            </header>
+            <div class="ts-dj-list">
+              {{#if hasAmbiencePlaylists}}
+                {{#each ambiencePlaylists}}
+                <div class="ts-dj-row {{#if active}}is-active{{/if}}" data-ambience-playlist-id="{{id}}">
+                  <div class="ts-dj-row-main">
+                    <strong>{{name}}</strong>
+                    <div class="meta">Tracks: {{trackCount}} | Loop: {{#if loop}}Yes{{else}}No{{/if}} | Shuffle: {{#if shuffle}}Yes{{else}}No{{/if}}</div>
+                    <div class="meta">{{trackNames}}</div>
+                  </div>
+                  <div class="ts-dj-actions">
+                    <button type="button" class="ts-dj-play-toggle" data-action="{{playAction}}" data-id="{{id}}"><i class="fas {{playIcon}}"></i></button>
+                    <button type="button" data-action="toggle-ambience-playlist-loop" data-id="{{id}}" class="loop {{#if loop}}is-on{{/if}}" title="Loop"><i class="fas fa-repeat"></i></button>
+                    <button type="button" data-action="toggle-ambience-playlist-shuffle" data-id="{{id}}" class="shuffle {{#if shuffle}}is-on{{/if}}" title="Shuffle"><i class="fas fa-random"></i></button>
+                    <button type="button" data-action="edit-ambience-playlist" data-id="{{id}}"><i class="fas fa-pen"></i></button>
+                    <button type="button" data-action="delete-ambience-playlist" data-id="{{id}}"><i class="fas fa-trash"></i></button>
+                  </div>
+                </div>
+                {{/each}}
+              {{else}}
+                <p class="notes">No ambience playlists yet.</p>
+              {{/if}}
+            </div>
+          </article>
+
+          <article class="ts-dj-card">
+            <header>
+              <h3>Ambience</h3>
+              <button type="button" data-action="create-ambience-track"><i class="fas fa-plus"></i> New</button>
+            </header>
+            <div class="ts-dj-list">
+              {{#if hasAmbienceTracks}}
+                {{#each ambienceTracks}}
+                <div class="ts-dj-row {{#if active}}is-active{{/if}}" data-ambience-track-id="{{id}}">
+                  <div class="ts-dj-row-main">
+                    <strong>{{name}}</strong>
+                    <div class="meta">File: {{fileName}}</div>
+                    <div class="meta">Clip: {{startLabel}} - {{endLabel}} | Speed: {{rateLabel}} | Loop: {{#if loop}}Yes{{else}}No{{/if}}</div>
+                  </div>
+                  <div class="ts-dj-actions">
+                    <button type="button" class="ts-dj-play-toggle" data-action="{{playAction}}" data-id="{{id}}"><i class="fas {{playIcon}}"></i></button>
+                    <button type="button" data-action="toggle-ambience-track-loop" data-id="{{id}}" class="loop {{#if loop}}is-on{{/if}}" title="Loop"><i class="fas fa-repeat"></i></button>
+                    <button type="button" data-action="edit-ambience-track" data-id="{{id}}"><i class="fas fa-pen"></i></button>
+                    <button type="button" data-action="delete-ambience-track" data-id="{{id}}"><i class="fas fa-trash"></i></button>
+                  </div>
+                </div>
+                {{/each}}
+              {{else}}
+                <p class="notes">No ambience tracks yet.</p>
+              {{/if}}
+            </div>
+          </article>
+        </div>
+      </div>
+    </details>
+  </section>
+</div>

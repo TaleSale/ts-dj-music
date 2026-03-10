@@ -1,0 +1,38 @@
+{
+  "id": "ts-dj-music",
+  "title": "TS-DJ-MUSIC",
+  "description": "DJ-модуль для Foundry: скорость 0.5-2.0, отрезки треков, плейлисты и управление воспроизведением.",
+  "version": "1.0.0",
+  "socket": true,
+  "compatibility": {
+    "minimum": "13",
+    "verified": "13"
+  },
+  "authors": [
+    {
+      "name": "Tale Sale",
+      "flags": {}
+    }
+  ],
+  "esmodules": [
+    "scripts/main.js"
+  ],
+  "styles": [
+    {
+      "src": "styles/main.css"
+    }
+  ],
+  "relationships": {
+    "systems": [
+      {
+        "id": "pf2e",
+        "type": "system",
+        "compatibility": {}
+      }
+    ]
+  },
+  "url": "",
+  "manifest": "",
+  "download": "",
+  "flags": {}
+}
