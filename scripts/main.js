@@ -10,11 +10,15 @@ const SETTING_KEYS = {
   ambiencePlaylists: "ambiencePlaylists",
   ambienceAllowConcurrent: "ambienceAllowConcurrent",
   liveRate: "liveRate",
+  liveMusicVolume: "liveMusicVolume",
+  liveAmbienceVolume: "liveAmbienceVolume",
 };
 
 const RATE_VALUES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 const SOCKET_CHANNEL = `module.${MODULE_ID}`;
 const SOUND_CHANNEL_MARK = Symbol("ts-dj-channel");
+const PLAYLIST_CREATE_PERMISSION = globalThis.CONST?.USER_PERMISSIONS?.PLAYLIST_CREATE ?? "PLAYLIST_CREATE";
+const PLAYLIST_CONFIGURE_PERMISSION = globalThis.CONST?.USER_PERMISSIONS?.PLAYLIST_CONFIGURE ?? "PLAYLIST_CONFIGURE";
 const SOCKET_ACTIONS = Object.freeze({
   playTrack: "play-track",
   playPlaylist: "play-playlist",
@@ -28,7 +32,13 @@ const SOCKET_ACTIONS = Object.freeze({
   stopAmbiencePlaylist: "stop-ambience-playlist",
   stopAmbienceTrack: "stop-ambience-track",
   setLiveRate: "set-live-rate",
+  setLiveMusicVolume: "set-live-music-volume",
+  setLiveAmbienceVolume: "set-live-ambience-volume",
+  requestPlaybackState: "request-playback-state",
+  syncPlaybackState: "sync-playback-state",
 });
+const INITIAL_SYNC_DELAY_MS = 350;
+const INITIAL_SYNC_TTL_MS = 10000;
 
 let appInstance = null;
 const sidebarSectionState = {
@@ -49,7 +59,8 @@ const playlistClipWatchers = new Map();
 const audioFileCache = new Map();
 let sidebarProgressTicker = null;
 let ambienceEnvironmentVolumeTicker = null;
-let lastAmbienceEnvironmentVolume = null;
+let lastAmbienceVolumeFingerprint = null;
+const pendingPlaybackSyncRequests = new Map();
 
 Hooks.once("init", () => {
   registerSettings();
@@ -58,6 +69,7 @@ Hooks.once("init", () => {
 Hooks.once("ready", () => {
   console.log(`${MODULE_ID} | ready`);
   registerModuleSocket();
+  queueInitialPlaybackSyncRequest();
   startAmbienceEnvironmentVolumeWatcher();
   window.addEventListener("beforeunload", clearAudioFileCache, { once: true });
   window.addEventListener("beforeunload", stopAmbienceEnvironmentVolumeWatcher, { once: true });
@@ -105,8 +117,9 @@ Hooks.on("updatePlaylistSound", (soundDoc, change) => {
 
 Hooks.on("updateSetting", (setting) => {
   const key = setting?.key ?? null;
-  if (key !== "core.globalAmbientVolume") return;
-  applyEnvironmentVolumeToActiveAmbience({ force: true });
+  if (key === "core.globalAmbientVolume") {
+    applyEnvironmentVolumeToActiveAmbience({ force: true });
+  }
 });
 
 function registerModuleSocket() {
@@ -187,9 +200,165 @@ async function handleModuleSocketEvent(message) {
     case SOCKET_ACTIONS.setLiveRate:
       await setLiveRate(payload.rate, { apply: payload.apply !== false, sync: false });
       break;
+    case SOCKET_ACTIONS.setLiveMusicVolume:
+      await setLiveMusicVolume(payload.volume, { apply: payload.apply !== false, sync: false });
+      break;
+    case SOCKET_ACTIONS.setLiveAmbienceVolume:
+      await setLiveAmbienceVolume(payload.volume, { apply: payload.apply !== false, sync: false });
+      break;
+    case SOCKET_ACTIONS.requestPlaybackState:
+      handlePlaybackStateRequest(payload);
+      break;
+    case SOCKET_ACTIONS.syncPlaybackState:
+      await handlePlaybackStateSync(payload);
+      break;
     default:
       break;
   }
+}
+
+function queueInitialPlaybackSyncRequest() {
+  if (!game.user?.id) return;
+  window.setTimeout(() => {
+    requestInitialPlaybackSync();
+  }, INITIAL_SYNC_DELAY_MS);
+}
+
+function requestInitialPlaybackSync() {
+  if (!game.user?.id || !game.socket) return;
+
+  const requestId = foundry.utils.randomID();
+  const timeoutId = window.setTimeout(() => {
+    pendingPlaybackSyncRequests.delete(requestId);
+  }, INITIAL_SYNC_TTL_MS);
+  pendingPlaybackSyncRequests.set(requestId, timeoutId);
+
+  emitModuleSocketEvent(SOCKET_ACTIONS.requestPlaybackState, {
+    targetUserId: game.user.id,
+    requestId,
+  });
+}
+
+function canRespondToPlaybackSyncRequest() {
+  const currentUser = game.user;
+  if (!currentUser?.active) return false;
+
+  if (currentUser.isGM) return true;
+
+  const activeGmOnline = game.users?.contents?.some((user) => user.active && user.isGM);
+  if (activeGmOnline) return false;
+
+  return canManagePlaylistControls();
+}
+
+function handlePlaybackStateRequest(payload = {}) {
+  const targetUserId = String(payload.targetUserId ?? "");
+  if (!targetUserId || targetUserId === game.user?.id) return;
+  if (!canRespondToPlaybackSyncRequest()) return;
+
+  const snapshot = buildPlaybackSyncSnapshot();
+  if (!snapshot) return;
+
+  emitModuleSocketEvent(SOCKET_ACTIONS.syncPlaybackState, {
+    targetUserId,
+    requestId: String(payload.requestId ?? ""),
+    snapshot,
+  });
+}
+
+async function handlePlaybackStateSync(payload = {}) {
+  const targetUserId = String(payload.targetUserId ?? "");
+  if (!targetUserId || targetUserId !== game.user?.id) return;
+
+  const requestId = String(payload.requestId ?? "");
+  if (!requestId || !pendingPlaybackSyncRequests.has(requestId)) return;
+
+  const timeoutId = pendingPlaybackSyncRequests.get(requestId);
+  if (timeoutId) {
+    window.clearTimeout(timeoutId);
+  }
+  pendingPlaybackSyncRequests.delete(requestId);
+
+  await applyPlaybackSyncSnapshot(payload.snapshot);
+}
+
+function buildPlaybackSyncSnapshot() {
+  const snapshot = {
+    capturedAtMs: Date.now(),
+    liveRate: getLiveRate(),
+    liveMusicVolume: getLiveMusicVolume(),
+    liveAmbienceVolume: getLiveAmbienceVolume(),
+  };
+
+  const current = playbackState.current;
+  if (!current || current.paused) return snapshot;
+
+  const fallbackOffset = Number.isFinite(current.clipStart) ? current.clipStart : 0;
+  const offset = getCurrentAbsoluteTime(current);
+  const playOffset = Number.isFinite(offset) ? offset : fallbackOffset;
+
+  return {
+    ...snapshot,
+    trackId: current.trackId,
+    mode: current.mode,
+    playlistId: current.playlistId,
+    queue: Array.isArray(current.queue) ? [...current.queue] : [],
+    index: Number.isFinite(current.index) ? Number(current.index) : 0,
+    playlistLoop: Boolean(current.playlistLoop),
+    playlistShuffle: Boolean(current.playlistShuffle),
+    loopEnabled: Boolean(current.loopEnabled),
+    clipStart: Number.isFinite(current.clipStart) ? Number(current.clipStart) : 0,
+    clipEnd: Number.isFinite(current.clipEnd) ? Number(current.clipEnd) : null,
+    playOffset,
+    timingRate: normalizeRate(Number(current.timingRate ?? 1)),
+  };
+}
+
+async function applyPlaybackSyncSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return;
+  const liveRate = normalizeRate(Number(snapshot.liveRate ?? 1));
+  await setLiveRate(liveRate, { apply: false, sync: false });
+  await setLiveMusicVolume(snapshot.liveMusicVolume, { apply: true, sync: false });
+  await setLiveAmbienceVolume(snapshot.liveAmbienceVolume, { apply: true, sync: false });
+
+  const trackId = String(snapshot.trackId ?? "");
+  if (!trackId) return;
+
+  let playOffset = Number.isFinite(snapshot.playOffset) ? Number(snapshot.playOffset) : 0;
+  const timingRate = normalizeRate(Number(snapshot.timingRate ?? 1));
+  const capturedAtMs = Number(snapshot.capturedAtMs);
+  if (Number.isFinite(capturedAtMs)) {
+    const elapsedSec = Math.max(0, (Date.now() - capturedAtMs) / 1000);
+    playOffset += elapsedSec * timingRate;
+  }
+
+  const clipStart = Number.isFinite(snapshot.clipStart) ? Number(snapshot.clipStart) : 0;
+  const clipEnd = Number.isFinite(snapshot.clipEnd) ? Number(snapshot.clipEnd) : null;
+  const loopEnabled = Boolean(snapshot.loopEnabled);
+  if (loopEnabled && Number.isFinite(clipEnd) && clipEnd > clipStart) {
+    const loopDuration = clipEnd - clipStart;
+    const loopOffset = Math.max(0, playOffset - clipStart);
+    playOffset = clipStart + (loopOffset % loopDuration);
+  }
+
+  const queue = Array.isArray(snapshot.queue) && snapshot.queue.length
+    ? [...snapshot.queue]
+    : [trackId];
+  const index = Number.isFinite(snapshot.index)
+    ? clampNumber(Math.trunc(Number(snapshot.index)), 0, Math.max(0, queue.length - 1))
+    : 0;
+
+  await playTrackById(trackId, {
+    sync: false,
+    mode: snapshot.mode === "playlist" ? "playlist" : "track",
+    playlistId: snapshot.playlistId ?? null,
+    queue,
+    index,
+    playlistLoop: Boolean(snapshot.playlistLoop),
+    playlistShuffle: Boolean(snapshot.playlistShuffle),
+    loopOverride: loopEnabled,
+    playOffset,
+  });
 }
 
 function registerSettings() {
@@ -248,6 +417,22 @@ function registerSettings() {
     type: Number,
     default: 1,
   });
+
+  game.settings.register(MODULE_ID, SETTING_KEYS.liveMusicVolume, {
+    name: "DJ Live Music Volume",
+    scope: "client",
+    config: false,
+    type: Number,
+    default: 1,
+  });
+
+  game.settings.register(MODULE_ID, SETTING_KEYS.liveAmbienceVolume, {
+    name: "DJ Live Ambience Volume",
+    scope: "client",
+    config: false,
+    type: Number,
+    default: 1,
+  });
 }
 
 function getRoot(html) {
@@ -257,9 +442,39 @@ function getRoot(html) {
   return null;
 }
 
+function canManagePlaylistControls() {
+  const user = game.user;
+  if (!user) return false;
+  if (user.isGM) return true;
+
+  if (typeof user.can === "function") {
+    if (user.can(PLAYLIST_CREATE_PERMISSION)) return true;
+    if (user.can(PLAYLIST_CONFIGURE_PERMISSION)) return true;
+  }
+
+  if (typeof user.hasPermission === "function") {
+    if (user.hasPermission(PLAYLIST_CREATE_PERMISSION)) return true;
+    if (user.hasPermission(PLAYLIST_CONFIGURE_PERMISSION)) return true;
+  }
+
+  const playlistDocumentClass = globalThis.Playlist ?? game.playlists?.documentClass;
+  if (playlistDocumentClass?.canUserCreate?.(user)) return true;
+
+  const canModifyAnyPlaylist = game.playlists?.contents?.some((playlist) => playlist?.canUserModify?.(user, "update"));
+  if (canModifyAnyPlaylist) return true;
+
+  return false;
+}
+
 function injectPlaylistDirectoryButton(root) {
+  const existing = root.querySelector(`button[data-action="${MODULE_ID}-open"]`);
+  if (!canManagePlaylistControls()) {
+    existing?.remove();
+    return;
+  }
+
   const buttonContainer = root.querySelector(".header-actions.action-buttons") ?? root.querySelector(".header-actions");
-  if (!buttonContainer || buttonContainer.querySelector(`button[data-action=\"${MODULE_ID}-open\"]`)) return;
+  if (!buttonContainer || existing) return;
 
   const button = document.createElement("button");
   button.type = "button";
@@ -270,186 +485,261 @@ function injectPlaylistDirectoryButton(root) {
 }
 
 function injectPlaylistDirectoryRateControl(root) {
+  const existing = root.querySelector(`.${MODULE_ID}-sidebar-rate`);
+  if (!canManagePlaylistControls()) {
+    existing?.remove();
+    return;
+  }
+
   const header = root.querySelector(".directory-header") ?? root.querySelector("header");
-  if (!header || header.querySelector(`.${MODULE_ID}-sidebar-rate`)) return;
+  if (!header) return;
+  existing?.remove();
 
   const wrap = document.createElement("div");
   wrap.classList.add(`${MODULE_ID}-sidebar-rate`);
 
-  const label = document.createElement("label");
-  label.textContent = "TS-DJ Speed";
+  const addControlRow = ({ labelText, min, max, step, value, format, onInput }) => {
+    const row = document.createElement("div");
+    row.classList.add("control-row");
 
-  const input = document.createElement("input");
-  input.type = "range";
-  input.min = "0.5";
-  input.max = "2";
-  input.step = "0.25";
-  input.value = String(getLiveRate());
+    const label = document.createElement("label");
+    label.textContent = labelText;
 
-  const value = document.createElement("span");
-  value.classList.add("value");
-  value.textContent = formatRate(Number(input.value));
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = String(min);
+    input.max = String(max);
+    input.step = String(step);
+    input.value = String(value);
 
-  input.addEventListener("input", async (event) => {
-    const rate = normalizeRate(Number(event.currentTarget.value));
-    event.currentTarget.value = String(rate);
-    value.textContent = formatRate(rate);
-    await setLiveRate(rate, { apply: true });
+    const valueLabel = document.createElement("span");
+    valueLabel.classList.add("value");
+    valueLabel.textContent = format(Number(input.value));
+
+    input.addEventListener("input", async (event) => {
+      const rawValue = Number(event.currentTarget.value);
+      const nextValue = onInput(rawValue);
+      event.currentTarget.value = String(nextValue);
+      valueLabel.textContent = format(nextValue);
+    });
+
+    row.append(label, input, valueLabel);
+    wrap.append(row);
+  };
+
+  addControlRow({
+    labelText: "TS-DJ Speed",
+    min: 0.5,
+    max: 2,
+    step: 0.25,
+    value: getLiveRate(),
+    format: (rate) => formatRate(rate),
+    onInput: (value) => {
+      const rate = normalizeRate(value);
+      void setLiveRate(rate, { apply: true }).catch((error) => {
+        console.warn(`${MODULE_ID} | failed to set live rate`, error);
+      });
+      return rate;
+    },
   });
 
-  wrap.append(label, input, value);
+  addControlRow({
+    labelText: "Music Vol",
+    min: 0,
+    max: 1,
+    step: 0.05,
+    value: getLiveMusicVolume(),
+    format: (volume) => formatVolumePercent(volume),
+    onInput: (value) => {
+      const volume = normalizeVolume(value);
+      void setLiveMusicVolume(volume, { apply: true }).catch((error) => {
+        console.warn(`${MODULE_ID} | failed to set live music volume`, error);
+      });
+      return volume;
+    },
+  });
+
+  addControlRow({
+    labelText: "Ambience Vol",
+    min: 0,
+    max: 1,
+    step: 0.05,
+    value: getLiveAmbienceVolume(),
+    format: (volume) => formatVolumePercent(volume),
+    onInput: (value) => {
+      const volume = normalizeVolume(value);
+      void setLiveAmbienceVolume(volume, { apply: true }).catch((error) => {
+        console.warn(`${MODULE_ID} | failed to set live ambience volume`, error);
+      });
+      return volume;
+    },
+  });
+
   header.appendChild(wrap);
 }
 
 function injectPlaylistDirectoryDjPanel(root) {
+  const canManage = canManagePlaylistControls();
   const files = getFiles();
   const fileMap = new Map(files.map((entry) => [entry.id, entry]));
   const tracks = getTracks();
   const playlists = getPlaylists();
   const ambienceTracks = getAmbienceTracks();
   const ambiencePlaylists = getAmbiencePlaylists();
-  const playlistsHtml = buildSidebarPlaylistsHtml(playlists, tracks);
-  const tracksHtml = buildSidebarTracksHtml(tracks, fileMap);
-  const ambiencePlaylistsHtml = buildSidebarAmbiencePlaylistsHtml(ambiencePlaylists, ambienceTracks);
-  const ambienceTracksHtml = buildSidebarAmbienceTracksHtml(ambienceTracks, fileMap);
+  const playlistsHtml = canManage ? buildSidebarPlaylistsHtml(playlists, tracks) : "";
+  const tracksHtml = canManage ? buildSidebarTracksHtml(tracks, fileMap) : "";
+  const ambiencePlaylistsHtml = canManage ? buildSidebarAmbiencePlaylistsHtml(ambiencePlaylists, ambienceTracks) : "";
+  const ambienceTracksHtml = canManage ? buildSidebarAmbienceTracksHtml(ambienceTracks, fileMap) : "";
+  const panelMode = canManage ? "controls" : "readonly";
 
   let panel = root.querySelector(`.${MODULE_ID}-sidebar-panel`);
+  if (panel && panel.dataset.mode !== panelMode) {
+    panel.remove();
+    panel = null;
+  }
+
   if (!panel) {
     panel = document.createElement("section");
     panel.classList.add(`${MODULE_ID}-sidebar-panel`);
-    panel.innerHTML = `
-      <div class="${MODULE_ID}-sidebar-head">
-        <span class="title">TS-DJ Quick</span>
-        <div class="actions">
-          <button type="button" data-action="open-manager" title="Open manager"><i class="fas fa-sliders-h"></i></button>
-          <button type="button" data-action="stop" title="Stop"><i class="fas fa-stop"></i></button>
+    panel.dataset.mode = panelMode;
+    panel.innerHTML = canManage
+      ? `
+        <div class="${MODULE_ID}-sidebar-head">
+          <span class="title">TS-DJ Quick</span>
+          <div class="actions">
+            <button type="button" data-action="open-manager" title="Open manager"><i class="fas fa-sliders-h"></i></button>
+            <button type="button" data-action="stop" title="Stop"><i class="fas fa-stop"></i></button>
+          </div>
         </div>
-      </div>
-      <div class="${MODULE_ID}-sidebar-now"></div>
-      <div class="${MODULE_ID}-sidebar-queue-nav">
-        <button type="button" data-action="playlist-prev" title="Previous track in playlist"><i class="fas fa-step-backward"></i></button>
-        <button type="button" data-action="playlist-next" title="Next track in playlist"><i class="fas fa-step-forward"></i></button>
-      </div>
-      <details ${sidebarSectionState.playlists ? "open" : ""} data-section="playlists" class="${MODULE_ID}-sidebar-section">
-        <summary>Playlists</summary>
-        <div class="${MODULE_ID}-sidebar-list"></div>
-      </details>
-      <details ${sidebarSectionState.music ? "open" : ""} data-section="music" class="${MODULE_ID}-sidebar-section">
-        <summary>Music</summary>
-        <div class="${MODULE_ID}-sidebar-list"></div>
-      </details>
-      <details ${sidebarSectionState.ambiencePlaylists ? "open" : ""} data-section="ambiencePlaylists" class="${MODULE_ID}-sidebar-section">
-        <summary>Ambience Playlists</summary>
-        <div class="${MODULE_ID}-sidebar-list"></div>
-      </details>
-      <details ${sidebarSectionState.ambience ? "open" : ""} data-section="ambience" class="${MODULE_ID}-sidebar-section">
-        <summary>Ambience</summary>
-        <div class="${MODULE_ID}-sidebar-list"></div>
-      </details>
-    `;
+        <div class="${MODULE_ID}-sidebar-now"></div>
+        <div class="${MODULE_ID}-sidebar-queue-nav">
+          <button type="button" data-action="playlist-prev" title="Previous track in playlist"><i class="fas fa-step-backward"></i></button>
+          <button type="button" data-action="playlist-next" title="Next track in playlist"><i class="fas fa-step-forward"></i></button>
+        </div>
+        <details ${sidebarSectionState.playlists ? "open" : ""} data-section="playlists" class="${MODULE_ID}-sidebar-section">
+          <summary>Playlists</summary>
+          <div class="${MODULE_ID}-sidebar-list"></div>
+        </details>
+        <details ${sidebarSectionState.music ? "open" : ""} data-section="music" class="${MODULE_ID}-sidebar-section">
+          <summary>Music</summary>
+          <div class="${MODULE_ID}-sidebar-list"></div>
+        </details>
+        <details ${sidebarSectionState.ambiencePlaylists ? "open" : ""} data-section="ambiencePlaylists" class="${MODULE_ID}-sidebar-section">
+          <summary>Ambience Playlists</summary>
+          <div class="${MODULE_ID}-sidebar-list"></div>
+        </details>
+        <details ${sidebarSectionState.ambience ? "open" : ""} data-section="ambience" class="${MODULE_ID}-sidebar-section">
+          <summary>Ambience</summary>
+          <div class="${MODULE_ID}-sidebar-list"></div>
+        </details>
+      `
+      : `
+        <div class="${MODULE_ID}-sidebar-now"></div>
+      `;
 
-    panel.querySelectorAll(`details[data-section]`).forEach((el) => {
-      const key = el.dataset.section;
-      el.addEventListener("toggle", () => {
-        if (!key) return;
-        sidebarSectionState[key] = el.open;
+    if (canManage) {
+      panel.querySelectorAll(`details[data-section]`).forEach((el) => {
+        const key = el.dataset.section;
+        el.addEventListener("toggle", () => {
+          if (!key) return;
+          sidebarSectionState[key] = el.open;
+        });
       });
-    });
+      panel.addEventListener("click", async (event) => {
+        const button = event.target.closest("button[data-action]");
+        if (!button) return;
+        event.preventDefault();
+        event.stopPropagation();
 
-    panel.addEventListener("click", async (event) => {
-      const button = event.target.closest("button[data-action]");
-      if (!button) return;
-      event.preventDefault();
-      event.stopPropagation();
+        const action = button.dataset.action;
+        const id = button.dataset.id;
 
-      const action = button.dataset.action;
-      const id = button.dataset.id;
-
-      if (action === "open-manager") {
-        openApp();
-        return;
-      }
-      if (action === "stop") {
-        await stopPlayback();
-        return;
-      }
-      if (action === "pause-current") {
-        await pauseCurrentPlayback();
-        return;
-      }
-      if (action === "resume-current") {
-        await resumeCurrentPlayback();
-        return;
-      }
-      if (action === "playlist-prev") {
-        await playRelativeTrackInCurrentPlaylist(-1);
-        return;
-      }
-      if (action === "playlist-next") {
-        await playRelativeTrackInCurrentPlaylist(1);
-        return;
-      }
-      if (action === "toggle-sidebar-playlist-expand" && id) {
-        sidebarPlaylistExpandState[id] = !Boolean(sidebarPlaylistExpandState[id]);
-        injectPlaylistDirectoryDjPanel(root);
-        return;
-      }
-      if (action === "play-playlist-from-track") {
-        const playlistId = button.dataset.playlistId ?? id;
-        const trackId = button.dataset.trackId ?? null;
-        if (playlistId && trackId) {
-          await playPlaylistById(playlistId, { startTrackId: trackId });
+        if (action === "open-manager") {
+          openApp();
+          return;
         }
-        return;
-      }
-      if (action === "play-playlist" && id) {
-        await playPlaylistById(id);
-        return;
-      }
-      if (action === "play-ambience-playlist" && id) {
-        await playAmbiencePlaylistById(id);
-        return;
-      }
-      if (action === "stop-ambience-playlist" && id) {
-        await stopAmbienceByPlaylistId(id);
-        return;
-      }
-      if (action === "toggle-playlist-loop" && id) {
-        await togglePlaylistLoop(id);
-        return;
-      }
-      if (action === "toggle-playlist-shuffle" && id) {
-        await togglePlaylistShuffle(id);
-        return;
-      }
-      if (action === "toggle-ambience-playlist-loop" && id) {
-        await toggleAmbiencePlaylistLoop(id);
-        return;
-      }
-      if (action === "toggle-ambience-playlist-shuffle" && id) {
-        await toggleAmbiencePlaylistShuffle(id);
-        return;
-      }
-      if (action === "play-track" && id) {
-        await playTrackById(id);
-        return;
-      }
-      if (action === "play-ambience" && id) {
-        await playAmbienceById(id);
-        return;
-      }
-      if (action === "stop-ambience") {
-        if (id) await stopAmbienceByTrackId(id);
-        return;
-      }
-      if (action === "toggle-track-loop" && id) {
-        await toggleTrackLoop(id);
-        return;
-      }
-      if (action === "toggle-ambience-track-loop" && id) {
-        await toggleAmbienceTrackLoop(id);
-      }
-    });
+        if (action === "stop") {
+          await stopPlayback();
+          return;
+        }
+        if (action === "pause-current") {
+          await pauseCurrentPlayback();
+          return;
+        }
+        if (action === "resume-current") {
+          await resumeCurrentPlayback();
+          return;
+        }
+        if (action === "playlist-prev") {
+          await playRelativeTrackInCurrentPlaylist(-1);
+          return;
+        }
+        if (action === "playlist-next") {
+          await playRelativeTrackInCurrentPlaylist(1);
+          return;
+        }
+        if (action === "toggle-sidebar-playlist-expand" && id) {
+          sidebarPlaylistExpandState[id] = !Boolean(sidebarPlaylistExpandState[id]);
+          injectPlaylistDirectoryDjPanel(root);
+          return;
+        }
+        if (action === "play-playlist-from-track") {
+          const playlistId = button.dataset.playlistId ?? id;
+          const trackId = button.dataset.trackId ?? null;
+          if (playlistId && trackId) {
+            await playPlaylistById(playlistId, { startTrackId: trackId });
+          }
+          return;
+        }
+        if (action === "play-playlist" && id) {
+          await playPlaylistById(id);
+          return;
+        }
+        if (action === "play-ambience-playlist" && id) {
+          await playAmbiencePlaylistById(id);
+          return;
+        }
+        if (action === "stop-ambience-playlist" && id) {
+          await stopAmbienceByPlaylistId(id);
+          return;
+        }
+        if (action === "toggle-playlist-loop" && id) {
+          await togglePlaylistLoop(id);
+          return;
+        }
+        if (action === "toggle-playlist-shuffle" && id) {
+          await togglePlaylistShuffle(id);
+          return;
+        }
+        if (action === "toggle-ambience-playlist-loop" && id) {
+          await toggleAmbiencePlaylistLoop(id);
+          return;
+        }
+        if (action === "toggle-ambience-playlist-shuffle" && id) {
+          await toggleAmbiencePlaylistShuffle(id);
+          return;
+        }
+        if (action === "play-track" && id) {
+          await playTrackById(id);
+          return;
+        }
+        if (action === "play-ambience" && id) {
+          await playAmbienceById(id);
+          return;
+        }
+        if (action === "stop-ambience") {
+          if (id) await stopAmbienceByTrackId(id);
+          return;
+        }
+        if (action === "toggle-track-loop" && id) {
+          await toggleTrackLoop(id);
+          return;
+        }
+        if (action === "toggle-ambience-track-loop" && id) {
+          await toggleAmbienceTrackLoop(id);
+        }
+      });
+    }
 
     const header = root.querySelector(".directory-header") ?? root.querySelector("header");
     const insertAnchor = root.querySelector(".directory-list") ?? root.querySelector(".directory-items") ?? root.querySelector("ol");
@@ -474,6 +764,8 @@ function injectPlaylistDirectoryDjPanel(root) {
 
   const nowTarget = panel.querySelector(`.${MODULE_ID}-sidebar-now`);
   if (nowTarget) nowTarget.textContent = currentLabel;
+
+  if (!canManage) return;
 
   const prevButton = panel.querySelector("button[data-action='playlist-prev']");
   if (prevButton) prevButton.disabled = !canPrev;
@@ -708,6 +1000,10 @@ function refreshManagerRuntimeUi() {
     }
   }
 
+  syncManagerRangeControl(root, "[data-action='set-live-rate']", ".ts-dj-live-rate-value", getLiveRate(), formatRate);
+  syncManagerRangeControl(root, "[data-action='set-live-music-volume']", ".ts-dj-live-music-volume-value", getLiveMusicVolume(), formatVolumePercent);
+  syncManagerRangeControl(root, "[data-action='set-live-ambience-volume']", ".ts-dj-live-ambience-volume-value", getLiveAmbienceVolume(), formatVolumePercent);
+
   root.querySelectorAll(".ts-dj-row[data-track-id]").forEach((row) => {
     const trackId = row.dataset.trackId;
     if (!trackId) return;
@@ -766,6 +1062,19 @@ function refreshManagerRuntimeUi() {
     playButton.innerHTML = `<i class="fas ${active ? "fa-pause" : "fa-play"}"></i>`;
   });
 }
+
+function syncManagerRangeControl(root, inputSelector, labelSelector, value, format) {
+  const input = root.querySelector(inputSelector);
+  if (input && document.activeElement !== input) {
+    input.value = String(value);
+  }
+
+  const label = root.querySelector(labelSelector);
+  if (label) {
+    label.textContent = format(value);
+  }
+}
+
 function updateCurrentPlaybackLoopMode(loopEnabled) {
   const current = playbackState.current;
   if (!current?.sound) return;
@@ -974,15 +1283,35 @@ function getEnvironmentVolume() {
   return clampNumber(Number.isFinite(value) ? value : 1, 0, 1);
 }
 
-function applyEnvironmentVolumeToActiveAmbience({ force = false } = {}) {
-  const volume = getEnvironmentVolume();
-  if (!force && Number.isFinite(lastAmbienceEnvironmentVolume) && Math.abs(lastAmbienceEnvironmentVolume - volume) < 0.001) {
+function getEffectiveAmbienceVolumeForSound(sound, {
+  environmentVolume = getEnvironmentVolume(),
+  ambienceVolume = getLiveAmbienceVolume(),
+} = {}) {
+  const moduleAmbienceVolume = normalizeVolume(ambienceVolume);
+  if (isSoundOnChannel(sound, "environment")) {
+    return moduleAmbienceVolume;
+  }
+  return clampNumber(environmentVolume * moduleAmbienceVolume, 0, 1);
+}
+
+function applyEnvironmentVolumeToActiveAmbience({
+  force = false,
+  ambienceVolume = getLiveAmbienceVolume(),
+} = {}) {
+  const environmentVolume = getEnvironmentVolume();
+  const normalizedAmbienceVolume = normalizeVolume(ambienceVolume);
+  const fingerprint = `${environmentVolume.toFixed(3)}|${normalizedAmbienceVolume.toFixed(3)}`;
+  if (!force && lastAmbienceVolumeFingerprint === fingerprint) {
     return;
   }
-  lastAmbienceEnvironmentVolume = volume;
+  lastAmbienceVolumeFingerprint = fingerprint;
+
   for (const entry of ambienceState.active.values()) {
-    if (isSoundOnChannel(entry.sound, "environment")) continue;
-    applySoundVolume(entry.sound, volume);
+    const effectiveVolume = getEffectiveAmbienceVolumeForSound(entry.sound, {
+      environmentVolume,
+      ambienceVolume: normalizedAmbienceVolume,
+    });
+    applySoundVolume(entry.sound, effectiveVolume);
   }
 }
 
@@ -1153,6 +1482,14 @@ function getLiveRate() {
   return normalizeRate(Number(game.settings.get(MODULE_ID, SETTING_KEYS.liveRate) ?? 1));
 }
 
+function getLiveMusicVolume() {
+  return normalizeVolume(game.settings.get(MODULE_ID, SETTING_KEYS.liveMusicVolume));
+}
+
+function getLiveAmbienceVolume() {
+  return normalizeVolume(game.settings.get(MODULE_ID, SETTING_KEYS.liveAmbienceVolume));
+}
+
 async function setLiveRate(rate, { apply = true, sync = true } = {}) {
   const normalized = normalizeRate(rate);
   await game.settings.set(MODULE_ID, SETTING_KEYS.liveRate, normalized);
@@ -1173,8 +1510,64 @@ async function setLiveRate(rate, { apply = true, sync = true } = {}) {
       rate: normalized,
       apply: Boolean(apply),
     });
+  } else {
+    refreshLiveControlsUi();
   }
 
+}
+
+async function setLiveMusicVolume(volume, { apply = true, sync = true } = {}) {
+  if (sync && !canManagePlaylistControls()) {
+    ui.notifications.warn("TS-DJ-MUSIC: not enough permissions to change music volume.");
+    return;
+  }
+
+  const normalized = normalizeVolume(volume);
+  await game.settings.set(MODULE_ID, SETTING_KEYS.liveMusicVolume, normalized);
+
+  if (apply) {
+    applyMusicVolumeToCurrentPlayback({ volume: normalized, force: true });
+  }
+
+  if (sync) {
+    emitModuleSocketEvent(SOCKET_ACTIONS.setLiveMusicVolume, {
+      volume: normalized,
+      apply: Boolean(apply),
+    });
+  } else {
+    refreshLiveControlsUi();
+  }
+}
+
+async function setLiveAmbienceVolume(volume, { apply = true, sync = true } = {}) {
+  if (sync && !canManagePlaylistControls()) {
+    ui.notifications.warn("TS-DJ-MUSIC: not enough permissions to change ambience volume.");
+    return;
+  }
+
+  const normalized = normalizeVolume(volume);
+  await game.settings.set(MODULE_ID, SETTING_KEYS.liveAmbienceVolume, normalized);
+
+  if (apply) {
+    applyEnvironmentVolumeToActiveAmbience({ force: true, ambienceVolume: normalized });
+  }
+
+  if (sync) {
+    emitModuleSocketEvent(SOCKET_ACTIONS.setLiveAmbienceVolume, {
+      volume: normalized,
+      apply: Boolean(apply),
+    });
+  } else {
+    refreshLiveControlsUi();
+  }
+}
+
+function applyMusicVolumeToCurrentPlayback({ volume = getLiveMusicVolume(), force = false } = {}) {
+  const current = playbackState.current;
+  if (!current?.sound) return;
+
+  if (current.paused && !force) return;
+  applySoundVolume(current.sound, volume);
 }
 
 function applyRateToPlayingPlaylistSounds(rate) {
@@ -1197,6 +1590,14 @@ function refreshPlaylistDirectoryUi() {
     return;
   }
   ui.playlists?.render(false);
+}
+
+function refreshLiveControlsUi() {
+  refreshManagerRuntimeUi();
+  const root = getRoot(ui.playlists?.element);
+  if (root) {
+    injectPlaylistDirectoryRateControl(root);
+  }
 }
 
 function openApp() {
@@ -1471,11 +1872,12 @@ async function playTrack(track, options = {}) {
   }
 
   const token = foundry.utils.randomID();
+  const liveMusicVolume = getLiveMusicVolume();
 
   const playOptions = {
     autoplay: true,
     loop,
-    volume: 1,
+    volume: liveMusicVolume,
     onended: () => {
       handleTrackEnded(token).catch((error) => console.warn(`${MODULE_ID} | onended failed`, error));
     },
@@ -1504,6 +1906,7 @@ async function playTrack(track, options = {}) {
   const liveRate = getLiveRate();
   const finalRate = liveRate !== 1 ? liveRate : defaultRate;
   applySoundRate(sound, finalRate);
+  applySoundVolume(sound, liveMusicVolume);
 
   playbackState.current = {
     token,
@@ -1571,10 +1974,11 @@ async function playAmbienceTrack(track, options = {}) {
   }
 
   const token = foundry.utils.randomID();
+  const ambienceVolume = getEffectiveAmbienceVolumeForSound(sound);
   const playOptions = {
     autoplay: true,
     loop,
-    volume: 1,
+    volume: ambienceVolume,
     onended: () => {
       handleAmbienceEnded(token).catch((error) => console.warn(`${MODULE_ID} | ambience onended failed`, error));
     },
@@ -2022,10 +2426,17 @@ class TsDjMusicApp extends Application {
     });
 
     const currentLabel = this.#getCurrentLabel(tracks, playlists);
+    const liveRate = getLiveRate();
+    const liveMusicVolume = getLiveMusicVolume();
+    const liveAmbienceVolume = getLiveAmbienceVolume();
 
     return {
-      liveRate: getLiveRate(),
-      liveRateLabel: formatRate(getLiveRate()),
+      liveRate,
+      liveRateLabel: formatRate(liveRate),
+      liveMusicVolume,
+      liveMusicVolumeLabel: formatVolumePercent(liveMusicVolume),
+      liveAmbienceVolume,
+      liveAmbienceVolumeLabel: formatVolumePercent(liveAmbienceVolume),
       ambienceAllowConcurrent: getAmbienceAllowConcurrent(),
       files,
       tracks,
@@ -2175,6 +2586,26 @@ class TsDjMusicApp extends Application {
       if (valueTarget) valueTarget.textContent = formatRate(rate);
 
       await setLiveRate(rate, { apply: true });
+    });
+
+    html.on("input", "[data-action='set-live-music-volume']", async (event) => {
+      const volume = normalizeVolume(Number(event.currentTarget.value));
+      event.currentTarget.value = String(volume);
+
+      const valueTarget = html[0].querySelector(".ts-dj-live-music-volume-value");
+      if (valueTarget) valueTarget.textContent = formatVolumePercent(volume);
+
+      await setLiveMusicVolume(volume, { apply: true });
+    });
+
+    html.on("input", "[data-action='set-live-ambience-volume']", async (event) => {
+      const volume = normalizeVolume(Number(event.currentTarget.value));
+      event.currentTarget.value = String(volume);
+
+      const valueTarget = html[0].querySelector(".ts-dj-live-ambience-volume-value");
+      if (valueTarget) valueTarget.textContent = formatVolumePercent(volume);
+
+      await setLiveAmbienceVolume(volume, { apply: true });
     });
 
     html.on("change", "[data-action='set-ambience-concurrency']", async (event) => {
@@ -2924,6 +3355,14 @@ function normalizeRate(value) {
   return clampNumber(snapped, 0.5, 2);
 }
 
+function normalizeVolume(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 1;
+  const bounded = clampNumber(numeric, 0, 1);
+  const snapped = Math.round(bounded * 20) / 20;
+  return clampNumber(snapped, 0, 1);
+}
+
 function normalizeArray(value) {
   return Array.isArray(value) ? foundry.utils.deepClone(value) : [];
 }
@@ -2939,6 +3378,11 @@ function shuffledArray(value) {
 
 function formatRate(rate) {
   return Number(rate).toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+}
+
+function formatVolumePercent(volume) {
+  const normalized = normalizeVolume(volume);
+  return `${Math.round(normalized * 100)}%`;
 }
 
 function toBoolean(value) {

@@ -1,9 +1,21 @@
 <div class="ts-dj-music-app">
   <section class="ts-dj-toolbar">
     <div class="ts-dj-live-rate">
-      <label>Speed (live)</label>
-      <input type="range" min="0.5" max="2" step="0.25" value="{{liveRate}}" data-action="set-live-rate">
-      <span class="ts-dj-live-rate-value">{{liveRateLabel}}</span>
+      <div class="ts-dj-live-control-row">
+        <label>Speed (live)</label>
+        <input type="range" min="0.5" max="2" step="0.25" value="{{liveRate}}" data-action="set-live-rate">
+        <span class="ts-dj-live-rate-value ts-dj-live-control-value">{{liveRateLabel}}</span>
+      </div>
+      <div class="ts-dj-live-control-row">
+        <label>Music Volume</label>
+        <input type="range" min="0" max="1" step="0.05" value="{{liveMusicVolume}}" data-action="set-live-music-volume">
+        <span class="ts-dj-live-music-volume-value ts-dj-live-control-value">{{liveMusicVolumeLabel}}</span>
+      </div>
+      <div class="ts-dj-live-control-row">
+        <label>Ambience Volume</label>
+        <input type="range" min="0" max="1" step="0.05" value="{{liveAmbienceVolume}}" data-action="set-live-ambience-volume">
+        <span class="ts-dj-live-ambience-volume-value ts-dj-live-control-value">{{liveAmbienceVolumeLabel}}</span>
+      </div>
       <label class="ts-dj-ambience-toggle">
         <input type="checkbox" data-action="set-ambience-concurrency" {{#if ambienceAllowConcurrent}}checked{{/if}}>
         Allow multiple Ambience

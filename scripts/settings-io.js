@@ -8,6 +8,8 @@ const SETTING_KEYS = Object.freeze({
   ambiencePlaylists: "ambiencePlaylists",
   ambienceAllowConcurrent: "ambienceAllowConcurrent",
   liveRate: "liveRate",
+  liveMusicVolume: "liveMusicVolume",
+  liveAmbienceVolume: "liveAmbienceVolume",
 });
 
 const AUDIO_EXTENSIONS = new Set([".mp3", ".ogg", ".wav", ".webm", ".flac", ".m4a", ".aac"]);
@@ -74,6 +76,12 @@ function normalizeRate(value) {
   return Math.max(0.5, Math.min(2, number));
 }
 
+function normalizeVolume(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 1;
+  return Math.max(0, Math.min(1, number));
+}
+
 function asString(value, fallback = "") {
   const text = String(value ?? "").trim();
   return text || fallback;
@@ -103,6 +111,8 @@ function getCurrentSettingsSnapshot() {
     ambiencePlaylists: normalizeArray(game.settings.get(MODULE_ID, SETTING_KEYS.ambiencePlaylists)),
     ambienceAllowConcurrent: Boolean(game.settings.get(MODULE_ID, SETTING_KEYS.ambienceAllowConcurrent)),
     liveRate: normalizeRate(game.settings.get(MODULE_ID, SETTING_KEYS.liveRate)),
+    liveMusicVolume: normalizeVolume(game.settings.get(MODULE_ID, SETTING_KEYS.liveMusicVolume)),
+    liveAmbienceVolume: normalizeVolume(game.settings.get(MODULE_ID, SETTING_KEYS.liveAmbienceVolume)),
   };
 }
 
@@ -119,6 +129,8 @@ function toImportShape(payload) {
     ambiencePlaylists: normalizeArray(data.ambiencePlaylists),
     ambienceAllowConcurrent: Boolean(data.ambienceAllowConcurrent),
     liveRate: normalizeRate(data.liveRate ?? 1),
+    liveMusicVolume: normalizeVolume(data.liveMusicVolume ?? 1),
+    liveAmbienceVolume: normalizeVolume(data.liveAmbienceVolume ?? 1),
   };
 }
 
@@ -480,6 +492,8 @@ async function applyImportedSettings(payload, selectedFolder = "") {
   await game.settings.set(MODULE_ID, SETTING_KEYS.ambiencePlaylists, ambiencePlaylists);
   await game.settings.set(MODULE_ID, SETTING_KEYS.ambienceAllowConcurrent, Boolean(incoming.ambienceAllowConcurrent));
   await game.settings.set(MODULE_ID, SETTING_KEYS.liveRate, normalizeRate(incoming.liveRate));
+  await game.settings.set(MODULE_ID, SETTING_KEYS.liveMusicVolume, normalizeVolume(incoming.liveMusicVolume));
+  await game.settings.set(MODULE_ID, SETTING_KEYS.liveAmbienceVolume, normalizeVolume(incoming.liveAmbienceVolume));
 
   return {
     applied: true,

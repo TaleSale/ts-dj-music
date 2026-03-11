@@ -2,7 +2,7 @@
   "id": "ts-dj-music",
   "title": "TS-DJ-MUSIC",
   "description": "DJ-модуль для Foundry: скорость 0.5-2.0, отрезки треков, плейлисты и управление воспроизведением.",
-  "version": "1.0.0.1",
+  "version": "1.0.0.2",
   "socket": true,
   "compatibility": {
     "minimum": "13",
@@ -33,6 +33,6 @@
   },
   "url": "https://github.com/TaleSale/ts-dj-music",
   "manifest": "https://raw.githubusercontent.com/TaleSale/ts-dj-music/main/module.json",
-  "download": "https://github.com/TaleSale/ts-dj-music/archive/refs/heads/main.zip"
+  "download": "https://github.com/TaleSale/ts-dj-music/archive/refs/heads/main.zip",
   "flags": {}
 }
