@@ -33,6 +33,5 @@
   },
   "url": "https://github.com/TaleSale/ts-dj-music",
   "manifest": "https://raw.githubusercontent.com/TaleSale/ts-dj-music/main/module.json",
-  "download": "https://github.com/TaleSale/ts-dj-music/archive/refs/heads/main.zip",
-  "flags": {}
+  "download": "https://github.com/TaleSale/ts-dj-music/archive/refs/heads/main.zip"
 }
