@@ -13,12 +13,24 @@ const SETTING_KEYS = {
   liveMusicVolume: "liveMusicVolume",
   liveAmbienceVolume: "liveAmbienceVolume",
 };
+const MANAGER_CARD_IDS = Object.freeze({
+  files: "files",
+  musicPlaylists: "music-playlists",
+  musicTracks: "music-tracks",
+  ambiencePlaylists: "ambience-playlists",
+  ambienceTracks: "ambience-tracks",
+});
 
 const RATE_VALUES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 const SOCKET_CHANNEL = `module.${MODULE_ID}`;
 const SOUND_CHANNEL_MARK = Symbol("ts-dj-channel");
+const STORAGE_PLAYLIST_NAME = "TS-DJ-MUSIC Storage";
+const STORAGE_FLAG_KEYS = Object.freeze({
+  isStorage: "isStoragePlaylist",
+  dataStore: "dataStore",
+  migratedFromSettings: "migratedFromWorldSettings",
+});
 const PLAYLIST_CREATE_PERMISSION = globalThis.CONST?.USER_PERMISSIONS?.PLAYLIST_CREATE ?? "PLAYLIST_CREATE";
-const PLAYLIST_CONFIGURE_PERMISSION = globalThis.CONST?.USER_PERMISSIONS?.PLAYLIST_CONFIGURE ?? "PLAYLIST_CONFIGURE";
 const SOCKET_ACTIONS = Object.freeze({
   playTrack: "play-track",
   playPlaylist: "play-playlist",
@@ -37,6 +49,22 @@ const SOCKET_ACTIONS = Object.freeze({
   requestPlaybackState: "request-playback-state",
   syncPlaybackState: "sync-playback-state",
 });
+const SOCKET_CONTROL_ACTIONS = new Set([
+  SOCKET_ACTIONS.playTrack,
+  SOCKET_ACTIONS.playPlaylist,
+  SOCKET_ACTIONS.playRelativeTrack,
+  SOCKET_ACTIONS.stopPlayback,
+  SOCKET_ACTIONS.pausePlayback,
+  SOCKET_ACTIONS.resumePlayback,
+  SOCKET_ACTIONS.playAmbienceTrack,
+  SOCKET_ACTIONS.playAmbiencePlaylist,
+  SOCKET_ACTIONS.stopAmbienceAll,
+  SOCKET_ACTIONS.stopAmbiencePlaylist,
+  SOCKET_ACTIONS.stopAmbienceTrack,
+  SOCKET_ACTIONS.setLiveRate,
+  SOCKET_ACTIONS.setLiveMusicVolume,
+  SOCKET_ACTIONS.setLiveAmbienceVolume,
+]);
 const INITIAL_SYNC_DELAY_MS = 350;
 const INITIAL_SYNC_TTL_MS = 10000;
 
@@ -55,6 +83,15 @@ const playbackState = {
 const ambienceState = {
   active: new Map(),
 };
+const storageState = {
+  files: [],
+  tracks: [],
+  playlists: [],
+  ambienceTracks: [],
+  ambiencePlaylists: [],
+  ambienceAllowConcurrent: false,
+};
+let storageLoaded = false;
 const playlistClipWatchers = new Map();
 const audioFileCache = new Map();
 let sidebarProgressTicker = null;
@@ -66,8 +103,9 @@ Hooks.once("init", () => {
   registerSettings();
 });
 
-Hooks.once("ready", () => {
+Hooks.once("ready", async () => {
   console.log(`${MODULE_ID} | ready`);
+  await initializeStorageState();
   registerModuleSocket();
   queueInitialPlaybackSyncRequest();
   startAmbienceEnvironmentVolumeWatcher();
@@ -119,7 +157,30 @@ Hooks.on("updateSetting", (setting) => {
   const key = setting?.key ?? null;
   if (key === "core.globalAmbientVolume") {
     applyEnvironmentVolumeToActiveAmbience({ force: true });
+    return;
   }
+});
+
+Hooks.on("updatePlaylist", (playlist, change) => {
+  if (!isStoragePlaylistDocument(playlist)) return;
+  const dataFlagPath = `flags.${MODULE_ID}.${STORAGE_FLAG_KEYS.dataStore}`;
+  if (foundry.utils.hasProperty(change, dataFlagPath)) {
+    void reloadStorageStateFromPlaylist(playlist);
+    return;
+  }
+  refreshPlaylistDirectoryUi();
+});
+
+Hooks.on("deletePlaylist", (playlist) => {
+  if (!isStoragePlaylistDocument(playlist)) return;
+  storageLoaded = false;
+  storageState.files = [];
+  storageState.tracks = [];
+  storageState.playlists = [];
+  storageState.ambienceTracks = [];
+  storageState.ambiencePlaylists = [];
+  storageState.ambienceAllowConcurrent = false;
+  refreshPlaylistDirectoryUi();
 });
 
 function registerModuleSocket() {
@@ -161,6 +222,7 @@ function sanitizePlayOptions(options = {}) {
 async function handleModuleSocketEvent(message) {
   if (!message || message.moduleId !== MODULE_ID) return;
   if (message.senderId && message.senderId === game.user?.id) return;
+  if (SOCKET_CONTROL_ACTIONS.has(message.action) && !isAuthorizedControlSender(message.senderId)) return;
 
   const payload = message.payload ?? {};
   switch (message.action) {
@@ -280,6 +342,205 @@ async function handlePlaybackStateSync(payload = {}) {
   pendingPlaybackSyncRequests.delete(requestId);
 
   await applyPlaybackSyncSnapshot(payload.snapshot);
+}
+
+function defaultStorageData() {
+  return {
+    files: [],
+    tracks: [],
+    playlists: [],
+    ambienceTracks: [],
+    ambiencePlaylists: [],
+    ambienceAllowConcurrent: false,
+  };
+}
+
+function normalizeStorageData(raw) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  return {
+    files: normalizeArray(source.files),
+    tracks: normalizeArray(source.tracks),
+    playlists: normalizeArray(source.playlists),
+    ambienceTracks: normalizeArray(source.ambienceTracks),
+    ambiencePlaylists: normalizeArray(source.ambiencePlaylists),
+    ambienceAllowConcurrent: Boolean(source.ambienceAllowConcurrent),
+  };
+}
+
+function cloneStorageData(data = storageState) {
+  return {
+    files: normalizeArray(data.files).map((entry) => ({ ...entry })),
+    tracks: normalizeArray(data.tracks).map((entry) => ({ ...entry })),
+    playlists: normalizeArray(data.playlists).map((entry) => ({ ...entry, trackIds: normalizeArray(entry.trackIds) })),
+    ambienceTracks: normalizeArray(data.ambienceTracks).map((entry) => ({ ...entry })),
+    ambiencePlaylists: normalizeArray(data.ambiencePlaylists).map((entry) => ({ ...entry, trackIds: normalizeArray(entry.trackIds) })),
+    ambienceAllowConcurrent: Boolean(data.ambienceAllowConcurrent),
+  };
+}
+
+function applyStorageData(next) {
+  const normalized = normalizeStorageData(next);
+  storageState.files = normalized.files;
+  storageState.tracks = normalized.tracks;
+  storageState.playlists = normalized.playlists;
+  storageState.ambienceTracks = normalized.ambienceTracks;
+  storageState.ambiencePlaylists = normalized.ambiencePlaylists;
+  storageState.ambienceAllowConcurrent = normalized.ambienceAllowConcurrent;
+  storageLoaded = true;
+}
+
+function isStoragePlaylistDocument(playlist) {
+  return Boolean(playlist?.getFlag?.(MODULE_ID, STORAGE_FLAG_KEYS.isStorage));
+}
+
+function findStoragePlaylist() {
+  const byFlag = game.playlists?.contents?.find((playlist) => isStoragePlaylistDocument(playlist));
+  if (byFlag) return byFlag;
+  return game.playlists?.contents?.find((playlist) => String(playlist?.name ?? "") === STORAGE_PLAYLIST_NAME) ?? null;
+}
+
+function canCurrentUserCreatePlaylists(user = game.user) {
+  if (!user) return false;
+  if (user.isGM) return true;
+
+  if (typeof user.can === "function" && user.can(PLAYLIST_CREATE_PERMISSION)) return true;
+  if (typeof user.hasPermission === "function" && user.hasPermission(PLAYLIST_CREATE_PERMISSION)) return true;
+
+  const playlistDocumentClass = globalThis.Playlist ?? game.playlists?.documentClass;
+  return Boolean(playlistDocumentClass?.canUserCreate?.(user));
+}
+
+function canUserUpdatePlaylist(playlist, user = game.user) {
+  if (!playlist || !user) return false;
+  if (user.isGM) return true;
+  if (typeof playlist.canUserModify === "function") {
+    return Boolean(playlist.canUserModify(user, "update"));
+  }
+  if (typeof playlist.testUserPermission === "function") {
+    const level = globalThis.CONST?.DOCUMENT_OWNERSHIP_LEVELS?.OWNER ?? 3;
+    return Boolean(playlist.testUserPermission(user, level));
+  }
+  return false;
+}
+
+async function ensureStoragePlaylist({ create = false } = {}) {
+  let playlist = findStoragePlaylist();
+  if (playlist) {
+    if (!isStoragePlaylistDocument(playlist)) {
+      try {
+        await playlist.setFlag(MODULE_ID, STORAGE_FLAG_KEYS.isStorage, true);
+      } catch (_error) {
+        // no-op
+      }
+    }
+    return playlist;
+  }
+
+  if (!create || !canCurrentUserCreatePlaylists()) return null;
+
+  const playlistClass = globalThis.Playlist ?? game.playlists?.documentClass;
+  if (!playlistClass?.create) return null;
+
+  playlist = await playlistClass.create({
+    name: STORAGE_PLAYLIST_NAME,
+    description: "TS-DJ-MUSIC data storage playlist",
+  });
+  await playlist.setFlag(MODULE_ID, STORAGE_FLAG_KEYS.isStorage, true);
+  await playlist.setFlag(MODULE_ID, STORAGE_FLAG_KEYS.dataStore, defaultStorageData());
+  return playlist;
+}
+
+function getLegacyWorldSettingsSnapshot() {
+  return {
+    files: normalizeArray(game.settings.get(MODULE_ID, SETTING_KEYS.files)),
+    tracks: normalizeArray(game.settings.get(MODULE_ID, SETTING_KEYS.tracks)),
+    playlists: normalizeArray(game.settings.get(MODULE_ID, SETTING_KEYS.playlists)),
+    ambienceTracks: normalizeArray(game.settings.get(MODULE_ID, SETTING_KEYS.ambienceTracks)),
+    ambiencePlaylists: normalizeArray(game.settings.get(MODULE_ID, SETTING_KEYS.ambiencePlaylists)),
+    ambienceAllowConcurrent: Boolean(game.settings.get(MODULE_ID, SETTING_KEYS.ambienceAllowConcurrent)),
+  };
+}
+
+function hasAnyStorageContent(data) {
+  return Boolean(
+    normalizeArray(data.files).length ||
+    normalizeArray(data.tracks).length ||
+    normalizeArray(data.playlists).length ||
+    normalizeArray(data.ambienceTracks).length ||
+    normalizeArray(data.ambiencePlaylists).length
+  );
+}
+
+async function maybeMigrateLegacyWorldSettings(playlist) {
+  if (!playlist || !game.user?.isGM) return;
+  const alreadyMigrated = Boolean(playlist.getFlag(MODULE_ID, STORAGE_FLAG_KEYS.migratedFromSettings));
+  if (alreadyMigrated) return;
+
+  const currentStore = normalizeStorageData(playlist.getFlag(MODULE_ID, STORAGE_FLAG_KEYS.dataStore));
+  if (hasAnyStorageContent(currentStore)) {
+    await playlist.setFlag(MODULE_ID, STORAGE_FLAG_KEYS.migratedFromSettings, true);
+    return;
+  }
+
+  const legacy = getLegacyWorldSettingsSnapshot();
+  if (hasAnyStorageContent(legacy)) {
+    await playlist.setFlag(MODULE_ID, STORAGE_FLAG_KEYS.dataStore, legacy);
+    console.log(`${MODULE_ID} | migrated legacy world settings into playlist storage`);
+  }
+
+  await playlist.setFlag(MODULE_ID, STORAGE_FLAG_KEYS.migratedFromSettings, true);
+}
+
+async function reloadStorageStateFromPlaylist(playlist = null) {
+  const target = playlist ?? await ensureStoragePlaylist({ create: false });
+  if (!target) {
+    applyStorageData(defaultStorageData());
+    refreshPlaylistDirectoryUi();
+    return;
+  }
+
+  const raw = target.getFlag(MODULE_ID, STORAGE_FLAG_KEYS.dataStore);
+  applyStorageData(raw);
+  refreshPlaylistDirectoryUi();
+}
+
+async function initializeStorageState() {
+  const playlist = await ensureStoragePlaylist({ create: game.user?.isGM });
+  if (playlist) {
+    await maybeMigrateLegacyWorldSettings(playlist);
+  }
+  await reloadStorageStateFromPlaylist(playlist);
+}
+
+async function persistStorageState() {
+  const playlist = await ensureStoragePlaylist({ create: true });
+  if (!playlist) {
+    throw new Error("TS-DJ-MUSIC: failed to access storage playlist.");
+  }
+  if (!canUserUpdatePlaylist(playlist, game.user)) {
+    throw new Error("TS-DJ-MUSIC: no permission to update storage playlist.");
+  }
+
+  await playlist.setFlag(MODULE_ID, STORAGE_FLAG_KEYS.dataStore, cloneStorageData());
+}
+
+function userCanManagePlaylistControls(user) {
+  if (!user) return false;
+  if (user.isGM) return true;
+
+  const storagePlaylist = findStoragePlaylist();
+  if (!storagePlaylist) {
+    return canCurrentUserCreatePlaylists(user);
+  }
+
+  return canUserUpdatePlaylist(storagePlaylist, user);
+}
+
+function isAuthorizedControlSender(senderId) {
+  const id = String(senderId ?? "");
+  if (!id) return false;
+  const sender = game.users?.get?.(id) ?? game.users?.contents?.find((user) => user.id === id);
+  return userCanManagePlaylistControls(sender);
 }
 
 function buildPlaybackSyncSnapshot() {
@@ -443,26 +704,12 @@ function getRoot(html) {
 }
 
 function canManagePlaylistControls() {
-  const user = game.user;
-  if (!user) return false;
-  if (user.isGM) return true;
+  return userCanManagePlaylistControls(game.user);
+}
 
-  if (typeof user.can === "function") {
-    if (user.can(PLAYLIST_CREATE_PERMISSION)) return true;
-    if (user.can(PLAYLIST_CONFIGURE_PERMISSION)) return true;
-  }
-
-  if (typeof user.hasPermission === "function") {
-    if (user.hasPermission(PLAYLIST_CREATE_PERMISSION)) return true;
-    if (user.hasPermission(PLAYLIST_CONFIGURE_PERMISSION)) return true;
-  }
-
-  const playlistDocumentClass = globalThis.Playlist ?? game.playlists?.documentClass;
-  if (playlistDocumentClass?.canUserCreate?.(user)) return true;
-
-  const canModifyAnyPlaylist = game.playlists?.contents?.some((playlist) => playlist?.canUserModify?.(user, "update"));
-  if (canModifyAnyPlaylist) return true;
-
+function ensureModuleControlAccess() {
+  if (canManagePlaylistControls()) return true;
+  ui.notifications.warn("TS-DJ-MUSIC: недостаточно прав модуля.");
   return false;
 }
 
@@ -1330,57 +1577,74 @@ function stopAmbienceEnvironmentVolumeWatcher() {
 }
 
 function getFiles() {
-  return normalizeArray(game.settings.get(MODULE_ID, SETTING_KEYS.files));
+  return normalizeArray(storageState.files);
 }
 
 function getTracks() {
-  return normalizeArray(game.settings.get(MODULE_ID, SETTING_KEYS.tracks));
+  return normalizeArray(storageState.tracks);
 }
 
 function getPlaylists() {
-  return normalizeArray(game.settings.get(MODULE_ID, SETTING_KEYS.playlists));
+  return normalizeArray(storageState.playlists);
 }
 
 function getAmbienceTracks() {
-  return normalizeArray(game.settings.get(MODULE_ID, SETTING_KEYS.ambienceTracks));
+  return normalizeArray(storageState.ambienceTracks);
 }
 
 function getAmbiencePlaylists() {
-  return normalizeArray(game.settings.get(MODULE_ID, SETTING_KEYS.ambiencePlaylists));
+  return normalizeArray(storageState.ambiencePlaylists);
 }
 
 function getAmbienceAllowConcurrent() {
-  return Boolean(game.settings.get(MODULE_ID, SETTING_KEYS.ambienceAllowConcurrent));
+  return Boolean(storageState.ambienceAllowConcurrent);
+}
+
+async function setStorageValue(key, value) {
+  if (!(key in storageState)) {
+    throw new Error(`TS-DJ-MUSIC: invalid storage key "${key}"`);
+  }
+  if (!canManagePlaylistControls()) {
+    ui.notifications.warn("TS-DJ-MUSIC: недостаточно прав модуля.");
+    throw new Error("TS-DJ-MUSIC: user is not allowed to manage this module");
+  }
+
+  try {
+    if (!storageLoaded) {
+      await initializeStorageState();
+    }
+    storageState[key] = value;
+    await persistStorageState();
+  } catch (error) {
+    console.warn(`${MODULE_ID} | failed to update storage key "${key}"`, error);
+    ui.notifications.error("TS-DJ-MUSIC: не удалось применить изменения в Playlist-хранилище.");
+    throw error;
+  }
+  refreshPlaylistDirectoryUi();
 }
 
 async function setFiles(files) {
-  await game.settings.set(MODULE_ID, SETTING_KEYS.files, files);
-  refreshPlaylistDirectoryUi();
+  await setStorageValue("files", normalizeArray(files));
 }
 
 async function setTracks(tracks) {
-  await game.settings.set(MODULE_ID, SETTING_KEYS.tracks, tracks);
-  refreshPlaylistDirectoryUi();
+  await setStorageValue("tracks", normalizeArray(tracks));
 }
 
 async function setPlaylists(playlists) {
-  await game.settings.set(MODULE_ID, SETTING_KEYS.playlists, playlists);
-  refreshPlaylistDirectoryUi();
+  await setStorageValue("playlists", normalizeArray(playlists));
 }
 
 async function setAmbienceTracks(tracks) {
-  await game.settings.set(MODULE_ID, SETTING_KEYS.ambienceTracks, tracks);
-  refreshPlaylistDirectoryUi();
+  await setStorageValue("ambienceTracks", normalizeArray(tracks));
 }
 
 async function setAmbiencePlaylists(playlists) {
-  await game.settings.set(MODULE_ID, SETTING_KEYS.ambiencePlaylists, playlists);
-  refreshPlaylistDirectoryUi();
+  await setStorageValue("ambiencePlaylists", normalizeArray(playlists));
 }
 
 async function setAmbienceAllowConcurrent(enabled) {
-  await game.settings.set(MODULE_ID, SETTING_KEYS.ambienceAllowConcurrent, Boolean(enabled));
-  refreshPlaylistDirectoryUi();
+  await setStorageValue("ambienceAllowConcurrent", Boolean(enabled));
 }
 
 async function togglePlaylistLoop(playlistId) {
@@ -1491,6 +1755,10 @@ function getLiveAmbienceVolume() {
 }
 
 async function setLiveRate(rate, { apply = true, sync = true } = {}) {
+  if (sync && !ensureModuleControlAccess()) {
+    return;
+  }
+
   const normalized = normalizeRate(rate);
   await game.settings.set(MODULE_ID, SETTING_KEYS.liveRate, normalized);
 
@@ -1517,8 +1785,7 @@ async function setLiveRate(rate, { apply = true, sync = true } = {}) {
 }
 
 async function setLiveMusicVolume(volume, { apply = true, sync = true } = {}) {
-  if (sync && !canManagePlaylistControls()) {
-    ui.notifications.warn("TS-DJ-MUSIC: not enough permissions to change music volume.");
+  if (sync && !ensureModuleControlAccess()) {
     return;
   }
 
@@ -1540,8 +1807,7 @@ async function setLiveMusicVolume(volume, { apply = true, sync = true } = {}) {
 }
 
 async function setLiveAmbienceVolume(volume, { apply = true, sync = true } = {}) {
-  if (sync && !canManagePlaylistControls()) {
-    ui.notifications.warn("TS-DJ-MUSIC: not enough permissions to change ambience volume.");
+  if (sync && !ensureModuleControlAccess()) {
     return;
   }
 
@@ -1580,6 +1846,7 @@ function applyRateToPlayingPlaylistSounds(rate) {
 }
 
 function refreshPlaylistDirectoryUi() {
+  enforceManagerAccessState();
   refreshManagerRuntimeUi();
 
   const root = getRoot(ui.playlists?.element);
@@ -1592,6 +1859,12 @@ function refreshPlaylistDirectoryUi() {
   ui.playlists?.render(false);
 }
 
+function enforceManagerAccessState() {
+  if (!appInstance?.rendered) return;
+  if (canManagePlaylistControls()) return;
+  appInstance.close();
+}
+
 function refreshLiveControlsUi() {
   refreshManagerRuntimeUi();
   const root = getRoot(ui.playlists?.element);
@@ -1601,6 +1874,11 @@ function refreshLiveControlsUi() {
 }
 
 function openApp() {
+  if (!canManagePlaylistControls()) {
+    ui.notifications.warn("TS-DJ-MUSIC: недостаточно прав модуля.");
+    return null;
+  }
+
   if (appInstance?.rendered) {
     appInstance.bringToTop();
     return appInstance;
@@ -1613,6 +1891,7 @@ function openApp() {
 
 async function playTrackById(trackId, options = {}) {
   const { sync = true, ...playOptions } = options;
+  if (sync && !ensureModuleControlAccess()) return;
   const tracks = getTracks();
   const track = tracks.find((entry) => entry.id === trackId);
   if (!track) {
@@ -1639,6 +1918,7 @@ async function playPlaylistById(playlistId, options = {}) {
     playlistShuffle: playlistShuffleOverride,
     startTrackId = null,
   } = options;
+  if (sync && !ensureModuleControlAccess()) return;
   const playlists = getPlaylists();
   const playlist = playlists.find((entry) => entry.id === playlistId);
   if (!playlist) {
@@ -1695,6 +1975,7 @@ async function playPlaylistById(playlistId, options = {}) {
 
 async function playRelativeTrackInCurrentPlaylist(direction = 1, options = {}) {
   const { sync = true } = options;
+  if (sync && !ensureModuleControlAccess()) return;
   const current = playbackState.current;
   if (!current || current.mode !== "playlist") return;
   const queue = normalizeArray(current.queue);
@@ -1746,6 +2027,7 @@ async function playRelativeTrackInCurrentPlaylist(direction = 1, options = {}) {
 
 async function playAmbienceById(trackId, options = {}) {
   const { sync = true, ...playOptions } = options;
+  if (sync && !ensureModuleControlAccess()) return;
   const tracks = getAmbienceTracks();
   const track = tracks.find((entry) => entry.id === trackId);
   if (!track) {
@@ -1770,6 +2052,7 @@ async function playAmbiencePlaylistById(playlistId, options = {}) {
     playlistLoop: playlistLoopOverride,
     playlistShuffle: playlistShuffleOverride,
   } = options;
+  if (sync && !ensureModuleControlAccess()) return;
   const playlists = getAmbiencePlaylists();
   const playlist = playlists.find((entry) => entry.id === playlistId);
   if (!playlist) {
@@ -2115,6 +2398,7 @@ async function handleTrackEnded(token, { forceStop = false } = {}) {
 }
 
 async function stopPlayback({ suppressUiRefresh = false, sync = true } = {}) {
+  if (sync && !ensureModuleControlAccess()) return;
   if (sync) {
     emitModuleSocketEvent(SOCKET_ACTIONS.stopPlayback);
   }
@@ -2149,6 +2433,7 @@ async function stopPlayback({ suppressUiRefresh = false, sync = true } = {}) {
 
 async function stopAllAmbience(options = {}) {
   const { sync = true } = options;
+  if (sync && !ensureModuleControlAccess()) return;
   if (sync) {
     emitModuleSocketEvent(SOCKET_ACTIONS.stopAmbienceAll);
   }
@@ -2162,6 +2447,7 @@ async function stopAllAmbience(options = {}) {
 
 async function stopAmbienceByTrackId(trackId, options = {}) {
   const { sync = true } = options;
+  if (sync && !ensureModuleControlAccess()) return;
   if (sync) {
     emitModuleSocketEvent(SOCKET_ACTIONS.stopAmbienceTrack, { trackId });
   }
@@ -2175,6 +2461,7 @@ async function stopAmbienceByTrackId(trackId, options = {}) {
 
 async function stopAmbienceByPlaylistId(playlistId, options = {}) {
   const { sync = true } = options;
+  if (sync && !ensureModuleControlAccess()) return;
   if (sync) {
     emitModuleSocketEvent(SOCKET_ACTIONS.stopAmbiencePlaylist, { playlistId });
   }
@@ -2265,6 +2552,7 @@ async function handleAmbienceEnded(token, { forceStop = false } = {}) {
 
 async function pauseCurrentPlayback(options = {}) {
   const { sync = true } = options;
+  if (sync && !ensureModuleControlAccess()) return;
   const current = playbackState.current;
   if (!current?.sound || current.paused) return;
 
@@ -2289,6 +2577,7 @@ async function pauseCurrentPlayback(options = {}) {
 
 async function resumeCurrentPlayback(options = {}) {
   const { sync = true } = options;
+  if (sync && !ensureModuleControlAccess()) return;
   const current = playbackState.current;
   if (!current?.sound || !current.paused) return;
 
@@ -2339,10 +2628,15 @@ class TsDjMusicApp extends Application {
 
   getData() {
     const current = playbackState.current;
-    const files = getFiles().map((file) => ({
-      ...file,
-      name: file.name || file.path || "Без имени",
-    }));
+    const files = getFiles().map((file) => {
+      const rawPath = String(file.path ?? "");
+      const displayPath = decodePathForDisplay(rawPath);
+      return {
+        ...file,
+        name: file.name || file.path || "Без имени",
+        path: displayPath || rawPath,
+      };
+    });
 
     const fileMap = new Map(files.map((file) => [file.id, file]));
 
@@ -2484,7 +2778,7 @@ class TsDjMusicApp extends Application {
           break;
         case "toggle-track-loop":
           await toggleTrackLoop(id);
-          this.render(false);
+          await this.#refreshCards([MANAGER_CARD_IDS.musicTracks]);
           break;
         case "create-playlist":
           await this.#createOrEditPlaylist();
@@ -2500,11 +2794,11 @@ class TsDjMusicApp extends Application {
           break;
         case "toggle-playlist-loop":
           await togglePlaylistLoop(id);
-          this.render(false);
+          await this.#refreshCards([MANAGER_CARD_IDS.musicPlaylists]);
           break;
         case "toggle-playlist-shuffle":
           await togglePlaylistShuffle(id);
-          this.render(false);
+          await this.#refreshCards([MANAGER_CARD_IDS.musicPlaylists]);
           break;
         case "pause-current":
           await pauseCurrentPlayback();
@@ -2521,10 +2815,11 @@ class TsDjMusicApp extends Application {
         case "import-settings": {
           const imported = await importModuleSettings();
           if (imported?.applied) {
+            await initializeStorageState();
             await stopPlayback();
             await stopAllAmbience();
             refreshPlaylistDirectoryUi();
-            this.render(false);
+            await this.#refreshCards(Object.values(MANAGER_CARD_IDS), { refreshToolbar: true });
 
             const info = imported.summary ?? {};
             ui.notifications.info(
@@ -2550,7 +2845,7 @@ class TsDjMusicApp extends Application {
           break;
         case "toggle-ambience-track-loop":
           await toggleAmbienceTrackLoop(id);
-          this.render(false);
+          await this.#refreshCards([MANAGER_CARD_IDS.ambienceTracks]);
           break;
         case "create-ambience-playlist":
           await this.#createOrEditAmbiencePlaylist();
@@ -2569,11 +2864,11 @@ class TsDjMusicApp extends Application {
           break;
         case "toggle-ambience-playlist-loop":
           await toggleAmbiencePlaylistLoop(id);
-          this.render(false);
+          await this.#refreshCards([MANAGER_CARD_IDS.ambiencePlaylists]);
           break;
         case "toggle-ambience-playlist-shuffle":
           await toggleAmbiencePlaylistShuffle(id);
-          this.render(false);
+          await this.#refreshCards([MANAGER_CARD_IDS.ambiencePlaylists]);
           break;
       }
     });
@@ -2626,6 +2921,41 @@ class TsDjMusicApp extends Application {
     return `Трек: ${currentTrack?.name ?? "?"}`;
   }
 
+  async #refreshCards(cardIds = [], { refreshToolbar = false } = {}) {
+    const root = this.element?.[0];
+    if (!(root instanceof HTMLElement)) return;
+
+    const uniqueCardIds = Array.from(new Set(cardIds.filter(Boolean)));
+    if (!uniqueCardIds.length) {
+      refreshManagerRuntimeUi();
+      return;
+    }
+
+    const templateHtml = await renderTemplate(this.options.template, this.getData());
+    const scratch = document.createElement("template");
+    scratch.innerHTML = templateHtml.trim();
+    const nextAppRoot = scratch.content.firstElementChild;
+    if (!(nextAppRoot instanceof HTMLElement)) return;
+
+    for (const cardId of uniqueCardIds) {
+      const selector = `.ts-dj-card[data-card="${cardId}"]`;
+      const nextCard = nextAppRoot.querySelector(selector);
+      const currentCard = root.querySelector(selector);
+      if (!nextCard || !currentCard) continue;
+      currentCard.replaceWith(nextCard);
+    }
+
+    if (refreshToolbar) {
+      const nextToolbar = nextAppRoot.querySelector(".ts-dj-toolbar");
+      const currentToolbar = root.querySelector(".ts-dj-toolbar");
+      if (nextToolbar && currentToolbar) {
+        currentToolbar.replaceWith(nextToolbar);
+      }
+    }
+
+    refreshManagerRuntimeUi();
+  }
+
   async #createOrEditFile(fileId = null) {
     const files = getFiles();
     const current = fileId ? files.find((entry) => entry.id === fileId) : null;
@@ -2641,7 +2971,11 @@ class TsDjMusicApp extends Application {
     }
 
     await setFiles(files);
-    this.render(false);
+    await this.#refreshCards([
+      MANAGER_CARD_IDS.files,
+      MANAGER_CARD_IDS.musicTracks,
+      MANAGER_CARD_IDS.ambienceTracks,
+    ]);
   }
 
   async #deleteFile(fileId) {
@@ -2685,7 +3019,7 @@ class TsDjMusicApp extends Application {
       await stopAmbienceByTrackId(ambienceTrackId);
     }
 
-    this.render(false);
+    await this.#refreshCards(Object.values(MANAGER_CARD_IDS));
   }
 
   async #createOrEditTrack(trackId = null) {
@@ -2709,7 +3043,7 @@ class TsDjMusicApp extends Application {
     }
 
     await setTracks(tracks);
-    this.render(false);
+    await this.#refreshCards([MANAGER_CARD_IDS.musicTracks, MANAGER_CARD_IDS.musicPlaylists]);
   }
 
   async #deleteTrack(trackId) {
@@ -2736,7 +3070,7 @@ class TsDjMusicApp extends Application {
       await stopPlayback();
     }
 
-    this.render(false);
+    await this.#refreshCards([MANAGER_CARD_IDS.musicTracks, MANAGER_CARD_IDS.musicPlaylists]);
   }
 
   async #createOrEditPlaylist(playlistId = null) {
@@ -2755,7 +3089,7 @@ class TsDjMusicApp extends Application {
     }
 
     await setPlaylists(playlists);
-    this.render(false);
+    await this.#refreshCards([MANAGER_CARD_IDS.musicPlaylists]);
   }
 
   async #deletePlaylist(playlistId) {
@@ -2775,7 +3109,7 @@ class TsDjMusicApp extends Application {
       await stopPlayback();
     }
 
-    this.render(false);
+    await this.#refreshCards([MANAGER_CARD_IDS.musicPlaylists]);
   }
 
   async #createOrEditAmbienceTrack(trackId = null) {
@@ -2798,7 +3132,7 @@ class TsDjMusicApp extends Application {
     }
 
     await setAmbienceTracks(tracks);
-    this.render(false);
+    await this.#refreshCards([MANAGER_CARD_IDS.ambienceTracks, MANAGER_CARD_IDS.ambiencePlaylists]);
   }
 
   async #deleteAmbienceTrack(trackId) {
@@ -2821,7 +3155,7 @@ class TsDjMusicApp extends Application {
     await setAmbienceTracks(nextTracks);
     await setAmbiencePlaylists(nextPlaylists);
     await stopAmbienceByTrackId(trackId);
-    this.render(false);
+    await this.#refreshCards([MANAGER_CARD_IDS.ambienceTracks, MANAGER_CARD_IDS.ambiencePlaylists]);
   }
 
   async #createOrEditAmbiencePlaylist(playlistId = null) {
@@ -2839,7 +3173,7 @@ class TsDjMusicApp extends Application {
     }
 
     await setAmbiencePlaylists(playlists);
-    this.render(false);
+    await this.#refreshCards([MANAGER_CARD_IDS.ambiencePlaylists]);
   }
 
   async #deleteAmbiencePlaylist(playlistId) {
@@ -2854,7 +3188,7 @@ class TsDjMusicApp extends Application {
     if (!confirmed) return;
 
     await setAmbiencePlaylists(playlists.filter((entry) => entry.id !== playlistId));
-    this.render(false);
+    await this.#refreshCards([MANAGER_CARD_IDS.ambiencePlaylists]);
   }
 }
 
@@ -3075,13 +3409,28 @@ function getPathBaseName(path) {
 }
 
 function decodePathComponent(value) {
-  const raw = String(value ?? "");
+  const raw = decodeEscapedUnicode(value);
   if (!raw) return "";
   try {
     return decodeURIComponent(raw);
   } catch (_error) {
     return raw;
   }
+}
+
+function decodeEscapedUnicode(value) {
+  const raw = String(value ?? "");
+  if (!raw) return "";
+  return raw.replace(/\\+[uU]([0-9a-fA-F]{4})/g, (_match, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+function decodePathForDisplay(path) {
+  const raw = decodeEscapedUnicode(path).trim();
+  if (!raw) return "";
+  return raw
+    .split(/([\\/])/)
+    .map((part) => (part === "/" || part === "\\" ? part : decodePathComponent(part)))
+    .join("");
 }
 
 async function promptPlaylistData(current, tracks) {

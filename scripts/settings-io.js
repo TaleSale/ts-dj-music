@@ -12,6 +12,12 @@ const SETTING_KEYS = Object.freeze({
   liveAmbienceVolume: "liveAmbienceVolume",
 });
 
+const STORAGE_PLAYLIST_NAME = "TS-DJ-MUSIC Storage";
+const STORAGE_FLAG_KEYS = Object.freeze({
+  isStorage: "isStoragePlaylist",
+  dataStore: "dataStore",
+});
+
 const AUDIO_EXTENSIONS = new Set([".mp3", ".ogg", ".wav", ".webm", ".flac", ".m4a", ".aac"]);
 let importInProgress = false;
 
@@ -23,6 +29,12 @@ function normalizeObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
+function decodeEscapedUnicode(value) {
+  const raw = String(value ?? "");
+  if (!raw) return "";
+  return raw.replace(/\\+[uU]([0-9a-fA-F]{4})/g, (_match, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
 function extractBrowsePath(entry) {
   if (typeof entry === "string") return normalizePath(entry);
   const object = normalizeObject(entry);
@@ -30,19 +42,33 @@ function extractBrowsePath(entry) {
 }
 
 function normalizePath(path) {
-  return String(path ?? "")
+  const raw = decodeEscapedUnicode(path)
+    .split("#")[0]
+    .split("?")[0];
+
+  return String(raw ?? "")
     .trim()
+    .replace(/^\[(data|public|s3)\]\s*/i, "")
     .replace(/\\/g, "/")
     .replace(/\/{2,}/g, "/")
     .replace(/\/$/, "");
 }
 
 function toPathKey(path) {
-  return normalizePath(path).replace(/^\/+/, "").toLowerCase();
+  return normalizePath(path)
+    .split("/")
+    .map((segment) => decodePathComponent(segment))
+    .join("/")
+    .replace(/^\/+/, "")
+    .toLowerCase();
 }
 
 function stripLeadingSlash(path) {
   return normalizePath(path).replace(/^\/+/, "");
+}
+
+function stripSourcePrefix(path) {
+  return stripLeadingSlash(path).replace(/^(data|public)\//i, "");
 }
 
 function getFileName(path) {
@@ -53,7 +79,7 @@ function getFileName(path) {
 }
 
 function decodePathComponent(value) {
-  const raw = String(value ?? "");
+  const raw = decodeEscapedUnicode(value);
   if (!raw) return "";
   try {
     return decodeURIComponent(raw);
@@ -102,14 +128,80 @@ function uniqueId(preferred, usedIds) {
   return next;
 }
 
-function getCurrentSettingsSnapshot() {
+function normalizeStorageData(raw) {
+  const source = normalizeObject(raw);
   return {
+    files: normalizeArray(source.files),
+    tracks: normalizeArray(source.tracks),
+    playlists: normalizeArray(source.playlists),
+    ambienceTracks: normalizeArray(source.ambienceTracks),
+    ambiencePlaylists: normalizeArray(source.ambiencePlaylists),
+    ambienceAllowConcurrent: Boolean(source.ambienceAllowConcurrent),
+  };
+}
+
+function isStoragePlaylistDocument(playlist) {
+  return Boolean(playlist?.getFlag?.(MODULE_ID, STORAGE_FLAG_KEYS.isStorage));
+}
+
+function findStoragePlaylist() {
+  const byFlag = game.playlists?.contents?.find((playlist) => isStoragePlaylistDocument(playlist));
+  if (byFlag) return byFlag;
+  return game.playlists?.contents?.find((playlist) => String(playlist?.name ?? "") === STORAGE_PLAYLIST_NAME) ?? null;
+}
+
+async function ensureStoragePlaylist() {
+  let playlist = findStoragePlaylist();
+  if (playlist) {
+    if (!isStoragePlaylistDocument(playlist)) {
+      await playlist.setFlag(MODULE_ID, STORAGE_FLAG_KEYS.isStorage, true);
+    }
+    return playlist;
+  }
+
+  const playlistClass = globalThis.Playlist ?? game.playlists?.documentClass;
+  if (!playlistClass?.create) {
+    throw new Error("Playlist document class is unavailable.");
+  }
+
+  playlist = await playlistClass.create({
+    name: STORAGE_PLAYLIST_NAME,
+    description: "TS-DJ-MUSIC data storage playlist",
+  });
+  await playlist.setFlag(MODULE_ID, STORAGE_FLAG_KEYS.isStorage, true);
+  await playlist.setFlag(MODULE_ID, STORAGE_FLAG_KEYS.dataStore, normalizeStorageData({}));
+  return playlist;
+}
+
+function getStorageSnapshot() {
+  const playlist = findStoragePlaylist();
+  if (!playlist) return null;
+  return normalizeStorageData(playlist.getFlag(MODULE_ID, STORAGE_FLAG_KEYS.dataStore));
+}
+
+async function setStorageSnapshot(payload) {
+  const playlist = await ensureStoragePlaylist();
+  await playlist.setFlag(MODULE_ID, STORAGE_FLAG_KEYS.dataStore, normalizeStorageData(payload));
+}
+
+async function getCurrentSettingsSnapshot() {
+  const storage = getStorageSnapshot();
+  const store = storage ?? {
     files: normalizeArray(game.settings.get(MODULE_ID, SETTING_KEYS.files)),
     tracks: normalizeArray(game.settings.get(MODULE_ID, SETTING_KEYS.tracks)),
     playlists: normalizeArray(game.settings.get(MODULE_ID, SETTING_KEYS.playlists)),
     ambienceTracks: normalizeArray(game.settings.get(MODULE_ID, SETTING_KEYS.ambienceTracks)),
     ambiencePlaylists: normalizeArray(game.settings.get(MODULE_ID, SETTING_KEYS.ambiencePlaylists)),
     ambienceAllowConcurrent: Boolean(game.settings.get(MODULE_ID, SETTING_KEYS.ambienceAllowConcurrent)),
+  };
+
+  return {
+    files: normalizeArray(store.files),
+    tracks: normalizeArray(store.tracks),
+    playlists: normalizeArray(store.playlists),
+    ambienceTracks: normalizeArray(store.ambienceTracks),
+    ambiencePlaylists: normalizeArray(store.ambiencePlaylists),
+    ambienceAllowConcurrent: Boolean(store.ambienceAllowConcurrent),
     liveRate: normalizeRate(game.settings.get(MODULE_ID, SETTING_KEYS.liveRate)),
     liveMusicVolume: normalizeVolume(game.settings.get(MODULE_ID, SETTING_KEYS.liveMusicVolume)),
     liveAmbienceVolume: normalizeVolume(game.settings.get(MODULE_ID, SETTING_KEYS.liveAmbienceVolume)),
@@ -277,11 +369,12 @@ async function promptFolderPath(_message, initialValue = "") {
 async function browseDataDirectory(directory) {
   const normalizedDirectory = normalizePath(directory);
   const withoutLeadingSlash = stripLeadingSlash(normalizedDirectory);
+  const withoutSourcePrefix = stripSourcePrefix(normalizedDirectory);
   const candidates = normalizedDirectory
-    ? [normalizedDirectory, withoutLeadingSlash, `/${withoutLeadingSlash}`]
+    ? [normalizedDirectory, withoutLeadingSlash, withoutSourcePrefix, `/${withoutLeadingSlash}`, `/${withoutSourcePrefix}`]
     : ["", "/", "."];
 
-  const uniqueCandidates = [...new Set(candidates)];
+  const uniqueCandidates = [...new Set(candidates.filter(Boolean))];
   let lastError = null;
 
   for (const candidate of uniqueCandidates) {
@@ -293,6 +386,29 @@ async function browseDataDirectory(directory) {
   }
 
   throw lastError ?? new Error("Failed to browse data directory.");
+}
+
+function resolveBrowseEntryPath(baseDirectory, rawEntryPath) {
+  const entryPath = normalizePath(rawEntryPath);
+  if (!entryPath) return "";
+
+  const basePath = normalizePath(baseDirectory);
+  if (!basePath) return entryPath;
+
+  const entryKey = toPathKey(entryPath);
+  const baseKey = toPathKey(basePath);
+  if (entryKey === baseKey || entryKey.startsWith(`${baseKey}/`)) {
+    return entryPath;
+  }
+
+  if (entryPath.startsWith("/")) return entryPath;
+
+  const entryRoot = entryPath.split("/")[0]?.toLowerCase();
+  if (["worlds", "systems", "modules", "assets", "packs"].includes(entryRoot)) {
+    return entryPath;
+  }
+
+  return joinPath(basePath, entryPath);
 }
 
 async function buildFolderIndex(folderPath) {
@@ -315,7 +431,7 @@ async function buildFolderIndex(folderPath) {
     }
 
     for (const filePath of normalizeArray(result.files)) {
-      const normalizedFilePath = extractBrowsePath(filePath);
+      const normalizedFilePath = resolveBrowseEntryPath(normalizedDirectory, extractBrowsePath(filePath));
       if (!normalizedFilePath) continue;
       const extension = `.${(normalizedFilePath.split(".").at(-1) ?? "").toLowerCase()}`;
       if (!AUDIO_EXTENSIONS.has(extension)) continue;
@@ -328,7 +444,7 @@ async function buildFolderIndex(folderPath) {
     }
 
     for (const nested of normalizeArray(result.dirs)) {
-      const nestedPath = extractBrowsePath(nested);
+      const nestedPath = resolveBrowseEntryPath(normalizedDirectory, extractBrowsePath(nested));
       if (!nestedPath) continue;
       await visit(nestedPath);
     }
@@ -341,6 +457,7 @@ async function buildFolderIndex(folderPath) {
 function resolvePath(rawPath, folderIndex, selectedFolder) {
   const normalizedPath = normalizePath(rawPath);
   const normalizedPathWithoutSlash = stripLeadingSlash(normalizedPath);
+  const normalizedPathWithoutSourcePrefix = stripSourcePrefix(normalizedPath);
   const fileName = getFileName(normalizedPath);
   const candidates = [];
 
@@ -348,6 +465,9 @@ function resolvePath(rawPath, folderIndex, selectedFolder) {
     candidates.push(normalizedPath);
     if (normalizedPathWithoutSlash && normalizedPathWithoutSlash !== normalizedPath) {
       candidates.push(normalizedPathWithoutSlash);
+    }
+    if (normalizedPathWithoutSourcePrefix && !candidates.includes(normalizedPathWithoutSourcePrefix)) {
+      candidates.push(normalizedPathWithoutSourcePrefix);
     }
     if (selectedFolder) candidates.push(joinPath(selectedFolder, fileName || normalizedPath));
   } else if (selectedFolder && fileName) {
@@ -485,12 +605,14 @@ async function applyImportedSettings(payload, selectedFolder = "") {
   const { playlists, skipped: skippedPlaylists } = normalizeImportedPlaylists(incoming.playlists, oldToNewTrackId);
   const { playlists: ambiencePlaylists, skipped: skippedAmbiencePlaylists } = normalizeImportedPlaylists(incoming.ambiencePlaylists, oldToNewAmbienceTrackId);
 
-  await game.settings.set(MODULE_ID, SETTING_KEYS.files, resultFiles);
-  await game.settings.set(MODULE_ID, SETTING_KEYS.tracks, tracks);
-  await game.settings.set(MODULE_ID, SETTING_KEYS.playlists, playlists);
-  await game.settings.set(MODULE_ID, SETTING_KEYS.ambienceTracks, ambienceTracks);
-  await game.settings.set(MODULE_ID, SETTING_KEYS.ambiencePlaylists, ambiencePlaylists);
-  await game.settings.set(MODULE_ID, SETTING_KEYS.ambienceAllowConcurrent, Boolean(incoming.ambienceAllowConcurrent));
+  await setStorageSnapshot({
+    files: resultFiles,
+    tracks,
+    playlists,
+    ambienceTracks,
+    ambiencePlaylists,
+    ambienceAllowConcurrent: Boolean(incoming.ambienceAllowConcurrent),
+  });
   await game.settings.set(MODULE_ID, SETTING_KEYS.liveRate, normalizeRate(incoming.liveRate));
   await game.settings.set(MODULE_ID, SETTING_KEYS.liveMusicVolume, normalizeVolume(incoming.liveMusicVolume));
   await game.settings.set(MODULE_ID, SETTING_KEYS.liveAmbienceVolume, normalizeVolume(incoming.liveAmbienceVolume));
@@ -517,7 +639,7 @@ export async function exportModuleSettings() {
     return false;
   }
 
-  const settings = getCurrentSettingsSnapshot();
+  const settings = await getCurrentSettingsSnapshot();
   const payload = {
     version: 1,
     moduleId: MODULE_ID,

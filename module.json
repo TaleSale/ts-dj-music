@@ -2,7 +2,7 @@
   "id": "ts-dj-music",
   "title": "TS-DJ-MUSIC",
   "description": "DJ-модуль для Foundry: скорость 0.5-2.0, отрезки треков, плейлисты и управление воспроизведением.",
-  "version": "1.0.0.3",
+  "version": "1.0.0.4",
   "socket": true,
   "compatibility": {
     "minimum": "13",
