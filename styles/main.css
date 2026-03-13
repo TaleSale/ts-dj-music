@@ -230,6 +230,19 @@
   font-weight: 700;
 }
 
+.ts-dj-dialog-form .form-group .form-fields {
+  min-width: 0;
+}
+
+.ts-dj-dialog-form .form-group .form-fields > input,
+.ts-dj-dialog-form .form-group .form-fields > select,
+.ts-dj-dialog-form .form-group .form-fields > file-picker {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
 .ts-dj-music-window .window-content button {
   white-space: nowrap;
 }

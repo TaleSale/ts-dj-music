@@ -150,6 +150,27 @@ function findStoragePlaylist() {
   return game.playlists?.contents?.find((playlist) => String(playlist?.name ?? "") === STORAGE_PLAYLIST_NAME) ?? null;
 }
 
+function canUserUpdatePlaylist(playlist, user = game.user) {
+  if (!playlist || !user) return false;
+  if (user.isGM) return true;
+  if (typeof playlist.canUserModify === "function") {
+    return Boolean(playlist.canUserModify(user, "update"));
+  }
+  if (typeof playlist.testUserPermission === "function") {
+    const level = globalThis.CONST?.DOCUMENT_OWNERSHIP_LEVELS?.OWNER ?? 3;
+    return Boolean(playlist.testUserPermission(user, level));
+  }
+  return false;
+}
+
+function canCurrentUserExportSettings(user = game.user) {
+  if (!user) return false;
+  if (user.isGM) return true;
+  const playlist = findStoragePlaylist();
+  if (!playlist) return false;
+  return canUserUpdatePlaylist(playlist, user);
+}
+
 async function ensureStoragePlaylist() {
   let playlist = findStoragePlaylist();
   if (playlist) {
@@ -634,8 +655,8 @@ async function applyImportedSettings(payload, selectedFolder = "") {
 }
 
 export async function exportModuleSettings() {
-  if (!game.user?.isGM) {
-    ui.notifications.warn("TS-DJ-MUSIC: only GM can export settings.");
+  if (!canCurrentUserExportSettings(game.user)) {
+    ui.notifications.warn("TS-DJ-MUSIC: no permission to export settings.");
     return false;
   }
 
@@ -664,8 +685,8 @@ export async function exportModuleSettings() {
 }
 
 export async function importModuleSettings() {
-  if (!game.user?.isGM) {
-    ui.notifications.warn("TS-DJ-MUSIC: only GM can import settings.");
+  if (!canCurrentUserExportSettings(game.user)) {
+    ui.notifications.warn("TS-DJ-MUSIC: no permission to import settings.");
     return { applied: false, cancelled: false };
   }
 

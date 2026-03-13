@@ -1424,6 +1424,7 @@ async function applyPlaylistSoundSettings(soundDoc, { restart = false } = {}) {
 
   const defaultRate = normalizeRate(Number(soundDoc.getFlag(MODULE_ID, "rate") ?? 1));
   const liveRate = normalizeRate(getLiveRate());
+  const finalRate = liveRate !== 1 ? liveRate : defaultRate;
 
   const clipStartRaw = soundDoc.getFlag(MODULE_ID, "clipStart");
   const clipEndRaw = soundDoc.getFlag(MODULE_ID, "clipEnd");
@@ -1448,14 +1449,13 @@ async function applyPlaylistSoundSettings(soundDoc, { restart = false } = {}) {
         playOptions.loopStart = offset;
         playOptions.loopEnd = clipEnd;
       } else {
-        playOptions.duration = clipEnd - offset;
+        playOptions.duration = Math.max(0.01, (clipEnd - offset) / finalRate);
       }
     }
 
     await sound.play(playOptions);
   }
 
-  const finalRate = liveRate !== 1 ? liveRate : defaultRate;
   applySoundRate(sound, finalRate);
   setPlaylistClipWatcher(soundDoc, !soundDoc.repeat && hasEnd ? clipEnd : null);
 }
@@ -2156,6 +2156,9 @@ async function playTrack(track, options = {}) {
 
   const token = foundry.utils.randomID();
   const liveMusicVolume = getLiveMusicVolume();
+  const defaultRate = normalizeRate(Number(track.rate ?? 1));
+  const liveRate = getLiveRate();
+  const finalRate = liveRate !== 1 ? liveRate : defaultRate;
 
   const playOptions = {
     autoplay: true,
@@ -2173,7 +2176,7 @@ async function playTrack(track, options = {}) {
       playOptions.loopStart = clipStart;
       playOptions.loopEnd = clipEnd;
     } else {
-      playOptions.duration = Math.max(0.01, clipEnd - offset);
+      playOptions.duration = Math.max(0.01, (clipEnd - offset) / finalRate);
     }
   }
 
@@ -2185,9 +2188,6 @@ async function playTrack(track, options = {}) {
     return;
   }
 
-  const defaultRate = normalizeRate(Number(track.rate ?? 1));
-  const liveRate = getLiveRate();
-  const finalRate = liveRate !== 1 ? liveRate : defaultRate;
   applySoundRate(sound, finalRate);
   applySoundVolume(sound, liveMusicVolume);
 
@@ -2258,6 +2258,9 @@ async function playAmbienceTrack(track, options = {}) {
 
   const token = foundry.utils.randomID();
   const ambienceVolume = getEffectiveAmbienceVolumeForSound(sound);
+  const defaultRate = normalizeRate(Number(track.rate ?? 1));
+  const liveRate = getLiveRate();
+  const finalRate = liveRate !== 1 ? liveRate : defaultRate;
   const playOptions = {
     autoplay: true,
     loop,
@@ -2272,7 +2275,7 @@ async function playAmbienceTrack(track, options = {}) {
       playOptions.loopStart = offset;
       playOptions.loopEnd = clipEnd;
     } else {
-      playOptions.duration = clipEnd - offset;
+      playOptions.duration = Math.max(0.01, (clipEnd - offset) / finalRate);
     }
   }
 
@@ -2284,9 +2287,6 @@ async function playAmbienceTrack(track, options = {}) {
     return;
   }
 
-  const defaultRate = normalizeRate(Number(track.rate ?? 1));
-  const liveRate = getLiveRate();
-  const finalRate = liveRate !== 1 ? liveRate : defaultRate;
   applySoundRate(sound, finalRate);
 
   const entry = {
@@ -2662,7 +2662,8 @@ class TsDjMusicApp extends Application {
 
     const playlists = getPlaylists().map((playlist) => {
       const trackIds = normalizeArray(playlist.trackIds);
-      const trackNames = trackIds
+      const validTrackIds = trackIds.filter((id) => trackMap.has(id));
+      const trackNames = validTrackIds
         .map((id) => trackMap.get(id)?.name)
         .filter(Boolean)
         .join(", ");
@@ -2670,7 +2671,7 @@ class TsDjMusicApp extends Application {
       return {
         ...playlist,
         name: playlist.name || "Без названия",
-        trackCount: trackIds.length,
+        trackCount: validTrackIds.length,
         trackNames: trackNames || "Пусто",
         loop: Boolean(playlist.loop),
         shuffle: Boolean(playlist.shuffle),
@@ -2705,11 +2706,12 @@ class TsDjMusicApp extends Application {
     const ambiencePlaylists = getAmbiencePlaylists().map((playlist) => {
       const active = isAmbiencePlaylistActive(playlist.id);
       const trackIds = normalizeArray(playlist.trackIds);
-      const trackNames = trackIds.map((id) => ambienceTrackMap.get(id)?.name).filter(Boolean).join(", ");
+      const validTrackIds = trackIds.filter((id) => ambienceTrackMap.has(id));
+      const trackNames = validTrackIds.map((id) => ambienceTrackMap.get(id)?.name).filter(Boolean).join(", ");
       return {
         ...playlist,
         name: playlist.name || "No name",
-        trackCount: trackIds.length,
+        trackCount: validTrackIds.length,
         trackNames: trackNames || "Empty",
         loop: Boolean(playlist.loop),
         shuffle: Boolean(playlist.shuffle),
@@ -3195,7 +3197,7 @@ class TsDjMusicApp extends Application {
 async function promptFileData(current = null) {
   const isNewFile = !current;
   const content = `
-    <form class="standard-form">
+    <form class="standard-form ts-dj-dialog-form">
       <div class="form-group">
         <label>Название</label>
         <div class="form-fields">
@@ -3267,7 +3269,7 @@ async function promptTrackData(current, files) {
     .join("");
 
   const content = `
-    <form class="standard-form">
+    <form class="standard-form ts-dj-dialog-form">
       <div class="form-group">
         <label>Название трека</label>
         <div class="form-fields">
@@ -3446,7 +3448,7 @@ async function promptPlaylistData(current, tracks) {
     : "<p class='notes'>Сначала создайте треки.</p>";
 
   const content = `
-    <form class="standard-form">
+    <form class="standard-form ts-dj-dialog-form">
       <div class="form-group">
         <label>Название плейлиста</label>
         <div class="form-fields">
@@ -3866,24 +3868,29 @@ function getTrackProgressForSidebar(track) {
       : null;
   const absoluteNow = getCurrentAbsoluteTime(current);
   if (!Number.isFinite(absoluteNow)) return null;
+  const playbackRate = normalizeRate(Number(current.timingRate ?? 1));
+  const displayRate = playbackRate > 0 ? playbackRate : 1;
 
   const insideClip = Math.max(0, absoluteNow - clipStart);
   const pausedMark = current.paused ? " (paused)" : "";
   if (Number.isFinite(clipEnd) && clipEnd > clipStart) {
     const clipDuration = clipEnd - clipStart;
     const boundedNow = Math.clamp(insideClip, 0, clipDuration);
+    const displayNow = Math.clamp(boundedNow / displayRate, 0, clipDuration / displayRate);
+    const displayDuration = clipDuration / displayRate;
     return {
-      nowSeconds: boundedNow,
-      maxSeconds: clipDuration,
-      label: `${formatDurationClock(boundedNow)} / ${formatDurationClock(clipDuration)}${pausedMark}`,
+      nowSeconds: displayNow,
+      maxSeconds: displayDuration,
+      label: `${formatDurationClock(displayNow)} / ${formatDurationClock(displayDuration)}${pausedMark}`,
     };
   }
 
-  const fallbackMax = Math.max(1, insideClip);
+  const displayInsideClip = insideClip / displayRate;
+  const fallbackMax = Math.max(1, displayInsideClip);
   return {
-    nowSeconds: Math.clamp(insideClip, 0, fallbackMax),
+    nowSeconds: Math.clamp(displayInsideClip, 0, fallbackMax),
     maxSeconds: fallbackMax,
-    label: `${formatDurationClock(insideClip)}${pausedMark}`,
+    label: `${formatDurationClock(displayInsideClip)}${pausedMark}`,
   };
 }
 
