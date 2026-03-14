@@ -12,6 +12,9 @@ const SETTING_KEYS = {
   liveRate: "liveRate",
   liveMusicVolume: "liveMusicVolume",
   liveAmbienceVolume: "liveAmbienceVolume",
+  collapseGlobalVolumeByDefault: "collapseGlobalVolumeByDefault",
+  collapseTsDjPlaylistsByDefault: "collapseTsDjPlaylistsByDefault",
+  collapseFoundryPlaylistsByDefault: "collapseFoundryPlaylistsByDefault",
 };
 const MANAGER_CARD_IDS = Object.freeze({
   files: "files",
@@ -67,6 +70,7 @@ const SOCKET_CONTROL_ACTIONS = new Set([
 ]);
 const INITIAL_SYNC_DELAY_MS = 350;
 const INITIAL_SYNC_TTL_MS = 10000;
+const PLAYLIST_DIRECTORY_SCROLL_CLASS = `${MODULE_ID}-playlist-directory-scroll`;
 
 let appInstance = null;
 const sidebarSectionState = {
@@ -76,12 +80,29 @@ const sidebarSectionState = {
   ambience: true,
 };
 const sidebarPlaylistExpandState = {};
+const sidebarUiState = {
+  rateCollapsed: false,
+  quickPanelCollapsed: false,
+  nativePlaylistsCollapsed: false,
+  defaultsLoaded: false,
+};
 
 const playbackState = {
   current: null,
+  requestId: 0,
+  loading: false,
+};
+const trackPreviewState = {
+  sound: null,
+  token: null,
+  requestId: 0,
+  loading: false,
+  onStateChange: null,
 };
 const ambienceState = {
   active: new Map(),
+  nextRequestId: 0,
+  pending: new Map(),
 };
 const storageState = {
   files: [],
@@ -92,12 +113,12 @@ const storageState = {
   ambienceAllowConcurrent: false,
 };
 let storageLoaded = false;
-const playlistClipWatchers = new Map();
 const audioFileCache = new Map();
 let sidebarProgressTicker = null;
 let ambienceEnvironmentVolumeTicker = null;
 let lastAmbienceVolumeFingerprint = null;
 const pendingPlaybackSyncRequests = new Map();
+const segmentLoopIntervals = new WeakMap();
 
 Hooks.once("init", () => {
   registerSettings();
@@ -126,31 +147,12 @@ Hooks.on("renderPlaylistDirectory", (_app, html) => {
   const root = getRoot(html);
   if (!root) return;
 
+  initializeSidebarUiStateFromSettings();
+  root.classList.add(PLAYLIST_DIRECTORY_SCROLL_CLASS);
   injectPlaylistDirectoryButton(root);
   injectPlaylistDirectoryRateControl(root);
   injectPlaylistDirectoryDjPanel(root);
-});
-
-Hooks.on("renderPlaylistSoundConfig", (app, html) => {
-  const root = getRoot(html);
-  if (!root) return;
-  injectPlaylistSoundConfig(app, root);
-});
-
-Hooks.on("updatePlaylistSound", (soundDoc, change) => {
-  const moduleFlags = foundry.utils.getProperty(change, `flags.${MODULE_ID}`) ?? null;
-  if (Object.hasOwn(change, "playing") && change.playing === false) {
-    clearPlaylistClipWatcher(soundDoc);
-  }
-  const started = Object.hasOwn(change, "playing") && change.playing === true;
-  if (!started && !moduleFlags) return;
-
-  const restart = started || Object.hasOwn(moduleFlags ?? {}, "clipStart") || Object.hasOwn(moduleFlags ?? {}, "clipEnd");
-  window.setTimeout(() => {
-    applyPlaylistSoundSettings(soundDoc, { restart }).catch((error) => {
-      console.warn(`${MODULE_ID} | failed to apply PlaylistSound settings`, error);
-    });
-  }, 75);
+  injectPlaylistDirectoryNativePlaylistsPanel(root);
 });
 
 Hooks.on("updateSetting", (setting) => {
@@ -694,6 +696,46 @@ function registerSettings() {
     type: Number,
     default: 1,
   });
+
+  const registerSidebarDefaultCollapseSetting = (key, name, hint) => {
+    game.settings.register(MODULE_ID, key, {
+      name,
+      hint,
+      scope: "client",
+      config: true,
+      type: Boolean,
+      default: false,
+      onChange: () => {
+        sidebarUiState.defaultsLoaded = false;
+        refreshPlaylistDirectoryUi();
+      },
+    });
+  };
+
+  registerSidebarDefaultCollapseSetting(
+    SETTING_KEYS.collapseGlobalVolumeByDefault,
+    "Collapse TS-DJ Global Volume",
+    "When enabled, TS-DJ Global Volume starts collapsed for this user."
+  );
+  registerSidebarDefaultCollapseSetting(
+    SETTING_KEYS.collapseTsDjPlaylistsByDefault,
+    "Collapse TS-DJ Playlists",
+    "When enabled, TS-DJ Playlists starts collapsed for this user."
+  );
+  registerSidebarDefaultCollapseSetting(
+    SETTING_KEYS.collapseFoundryPlaylistsByDefault,
+    "Collapse Foundry Playlists",
+    "When enabled, Foundry Playlists starts collapsed for this user."
+  );
+}
+
+function initializeSidebarUiStateFromSettings() {
+  if (sidebarUiState.defaultsLoaded) return;
+
+  sidebarUiState.rateCollapsed = Boolean(game.settings.get(MODULE_ID, SETTING_KEYS.collapseGlobalVolumeByDefault));
+  sidebarUiState.quickPanelCollapsed = Boolean(game.settings.get(MODULE_ID, SETTING_KEYS.collapseTsDjPlaylistsByDefault));
+  sidebarUiState.nativePlaylistsCollapsed = Boolean(game.settings.get(MODULE_ID, SETTING_KEYS.collapseFoundryPlaylistsByDefault));
+  sidebarUiState.defaultsLoaded = true;
 }
 
 function getRoot(html) {
@@ -744,13 +786,55 @@ function injectPlaylistDirectoryRateControl(root) {
 
   const wrap = document.createElement("div");
   wrap.classList.add(`${MODULE_ID}-sidebar-rate`);
+  wrap.innerHTML = `
+    <div class="${MODULE_ID}-sidebar-rate-speed"></div>
+    <div class="global-volume global-control ${MODULE_ID}-sidebar-volume-control ${sidebarUiState.rateCollapsed ? "" : "expanded"}">
+      <header class="playlist-header" data-action="volumeExpand">
+        <i class="expand fa-solid fa-angle-up" inert></i>
+        <strong>TS-DJ Global Volume</strong>
+      </header>
+      <div class="expandable">
+        <div class="wrapper">
+          <ol class="${MODULE_ID}-sidebar-rate-body plain"></ol>
+        </div>
+      </div>
+    </div>
+  `;
 
-  const addControlRow = ({ labelText, min, max, step, value, format, onInput }) => {
-    const row = document.createElement("div");
+  const speedBody = wrap.querySelector(`.${MODULE_ID}-sidebar-rate-speed`);
+  const volumeControl = wrap.querySelector(`.${MODULE_ID}-sidebar-volume-control`);
+  const rateBody = wrap.querySelector(`.${MODULE_ID}-sidebar-rate-body`);
+  const volumeHeader = wrap.querySelector(`.${MODULE_ID}-sidebar-volume-control header.playlist-header`);
+  if (!speedBody || !volumeControl || !rateBody || !volumeHeader) return;
+
+  const syncRateCollapseUi = () => {
+    volumeControl.classList.toggle("expanded", !sidebarUiState.rateCollapsed);
+  };
+
+  volumeHeader.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    sidebarUiState.rateCollapsed = !sidebarUiState.rateCollapsed;
+    syncRateCollapseUi();
+  });
+  syncRateCollapseUi();
+
+  const getVolumeIconClass = (volume) => {
+    const normalized = normalizeVolume(volume);
+    if (normalized <= 0) return "fa-volume-xmark";
+    if (normalized < 0.5) return "fa-volume-low";
+    return "fa-volume-high";
+  };
+
+  const addControlRow = ({ labelText, min, max, step, value, format, onInput, container, showValue = true, iconFromValue = null }) => {
+    const rowTag = String(container?.tagName ?? "").toUpperCase() === "OL" ? "li" : "div";
+    const row = document.createElement(rowTag);
     row.classList.add("control-row");
+    if (rowTag === "LI") row.classList.add("flexrow");
 
     const label = document.createElement("label");
     label.textContent = labelText;
+    label.title = labelText;
 
     const input = document.createElement("input");
     input.type = "range";
@@ -759,19 +843,35 @@ function injectPlaylistDirectoryRateControl(root) {
     input.step = String(step);
     input.value = String(value);
 
-    const valueLabel = document.createElement("span");
-    valueLabel.classList.add("value");
-    valueLabel.textContent = format(Number(input.value));
+    let icon = null;
+    if (typeof iconFromValue === "function") {
+      icon = document.createElement("i");
+      icon.classList.add("volume-icon", "fa-fw", "fa-solid");
+      icon.classList.add(iconFromValue(Number(input.value)));
+    }
+
+    let valueLabel = null;
+    if (showValue) {
+      valueLabel = document.createElement("span");
+      valueLabel.classList.add("value");
+      valueLabel.textContent = format(Number(input.value));
+    }
 
     input.addEventListener("input", async (event) => {
       const rawValue = Number(event.currentTarget.value);
       const nextValue = onInput(rawValue);
       event.currentTarget.value = String(nextValue);
-      valueLabel.textContent = format(nextValue);
+      if (valueLabel) valueLabel.textContent = format(nextValue);
+      if (icon && typeof iconFromValue === "function") {
+        icon.classList.remove("fa-volume-xmark", "fa-volume-low", "fa-volume-high");
+        icon.classList.add(iconFromValue(nextValue));
+      }
     });
 
-    row.append(label, input, valueLabel);
-    wrap.append(row);
+    if (icon) row.append(label, icon, input);
+    else if (valueLabel) row.append(label, input, valueLabel);
+    else row.append(label, input);
+    container.append(row);
   };
 
   addControlRow({
@@ -788,10 +888,11 @@ function injectPlaylistDirectoryRateControl(root) {
       });
       return rate;
     },
+    container: speedBody,
   });
 
   addControlRow({
-    labelText: "Music Vol",
+    labelText: "Music",
     min: 0,
     max: 1,
     step: 0.05,
@@ -804,10 +905,13 @@ function injectPlaylistDirectoryRateControl(root) {
       });
       return volume;
     },
+    container: rateBody,
+    showValue: false,
+    iconFromValue: getVolumeIconClass,
   });
 
   addControlRow({
-    labelText: "Ambience Vol",
+    labelText: "Ambience",
     min: 0,
     max: 1,
     step: 0.05,
@@ -820,6 +924,9 @@ function injectPlaylistDirectoryRateControl(root) {
       });
       return volume;
     },
+    container: rateBody,
+    showValue: false,
+    iconFromValue: getVolumeIconClass,
   });
 
   header.appendChild(wrap);
@@ -847,44 +954,59 @@ function injectPlaylistDirectoryDjPanel(root) {
 
   if (!panel) {
     panel = document.createElement("section");
-    panel.classList.add(`${MODULE_ID}-sidebar-panel`);
+    panel.classList.add(`${MODULE_ID}-sidebar-panel`, `${MODULE_ID}-sidebar-quick-control`);
     panel.dataset.mode = panelMode;
     panel.innerHTML = canManage
       ? `
-        <div class="${MODULE_ID}-sidebar-head">
-          <span class="title">TS-DJ Quick</span>
+        <header class="playlist-header ${MODULE_ID}-sidebar-head" data-action="toggle-quick-panel">
+          <i class="expand fa-solid fa-angle-up" inert></i>
+          <strong class="title">TS-DJ Playlists</strong>
           <div class="actions">
             <button type="button" data-action="open-manager" title="Open manager"><i class="fas fa-sliders-h"></i></button>
             <button type="button" data-action="stop" title="Stop"><i class="fas fa-stop"></i></button>
           </div>
-        </div>
+        </header>
         <div class="${MODULE_ID}-sidebar-now"></div>
-        <div class="${MODULE_ID}-sidebar-queue-nav">
-          <button type="button" data-action="playlist-prev" title="Previous track in playlist"><i class="fas fa-step-backward"></i></button>
-          <button type="button" data-action="playlist-next" title="Next track in playlist"><i class="fas fa-step-forward"></i></button>
+        <div class="expandable">
+          <div class="wrapper">
+            <div class="${MODULE_ID}-sidebar-body">
+              <div class="${MODULE_ID}-sidebar-queue-nav">
+                <button type="button" data-action="playlist-prev" title="Previous track in playlist"><i class="fas fa-step-backward"></i></button>
+                <button type="button" data-action="playlist-next" title="Next track in playlist"><i class="fas fa-step-forward"></i></button>
+              </div>
+              <details ${sidebarSectionState.playlists ? "open" : ""} data-section="playlists" class="${MODULE_ID}-sidebar-section">
+                <summary>Playlists</summary>
+                <div class="${MODULE_ID}-sidebar-list"></div>
+              </details>
+              <details ${sidebarSectionState.music ? "open" : ""} data-section="music" class="${MODULE_ID}-sidebar-section">
+                <summary>Music</summary>
+                <div class="${MODULE_ID}-sidebar-list"></div>
+              </details>
+              <details ${sidebarSectionState.ambiencePlaylists ? "open" : ""} data-section="ambiencePlaylists" class="${MODULE_ID}-sidebar-section">
+                <summary>Ambience Playlists</summary>
+                <div class="${MODULE_ID}-sidebar-list"></div>
+              </details>
+              <details ${sidebarSectionState.ambience ? "open" : ""} data-section="ambience" class="${MODULE_ID}-sidebar-section">
+                <summary>Ambience</summary>
+                <div class="${MODULE_ID}-sidebar-list"></div>
+              </details>
+            </div>
+          </div>
         </div>
-        <details ${sidebarSectionState.playlists ? "open" : ""} data-section="playlists" class="${MODULE_ID}-sidebar-section">
-          <summary>Playlists</summary>
-          <div class="${MODULE_ID}-sidebar-list"></div>
-        </details>
-        <details ${sidebarSectionState.music ? "open" : ""} data-section="music" class="${MODULE_ID}-sidebar-section">
-          <summary>Music</summary>
-          <div class="${MODULE_ID}-sidebar-list"></div>
-        </details>
-        <details ${sidebarSectionState.ambiencePlaylists ? "open" : ""} data-section="ambiencePlaylists" class="${MODULE_ID}-sidebar-section">
-          <summary>Ambience Playlists</summary>
-          <div class="${MODULE_ID}-sidebar-list"></div>
-        </details>
-        <details ${sidebarSectionState.ambience ? "open" : ""} data-section="ambience" class="${MODULE_ID}-sidebar-section">
-          <summary>Ambience</summary>
-          <div class="${MODULE_ID}-sidebar-list"></div>
-        </details>
       `
       : `
         <div class="${MODULE_ID}-sidebar-now"></div>
       `;
 
     if (canManage) {
+      const panelHeader = panel.querySelector(`.${MODULE_ID}-sidebar-head[data-action='toggle-quick-panel']`);
+      panelHeader?.addEventListener("click", (event) => {
+        if (event.target.closest("button[data-action]")) return;
+        event.preventDefault();
+        sidebarUiState.quickPanelCollapsed = !sidebarUiState.quickPanelCollapsed;
+        panel.classList.toggle("expanded", !sidebarUiState.quickPanelCollapsed);
+      });
+
       panel.querySelectorAll(`details[data-section]`).forEach((el) => {
         const key = el.dataset.section;
         el.addEventListener("toggle", () => {
@@ -989,7 +1111,8 @@ function injectPlaylistDirectoryDjPanel(root) {
     }
 
     const header = root.querySelector(".directory-header") ?? root.querySelector("header");
-    const insertAnchor = root.querySelector(".directory-list") ?? root.querySelector(".directory-items") ?? root.querySelector("ol");
+    const nativePlaylistsPanel = root.querySelector(`.${MODULE_ID}-native-playlists-panel`);
+    const insertAnchor = nativePlaylistsPanel ?? root.querySelector(".directory-list") ?? root.querySelector(".directory-items") ?? root.querySelector("ol");
     if (insertAnchor?.parentElement) {
       insertAnchor.before(panel);
     } else if (header) {
@@ -997,6 +1120,10 @@ function injectPlaylistDirectoryDjPanel(root) {
     } else {
       root.prepend(panel);
     }
+  }
+
+  if (canManage) {
+    panel.classList.toggle("expanded", !sidebarUiState.quickPanelCollapsed);
   }
 
   const currentLabel = getCurrentPlaybackLabelForSidebar(tracks, playlists);
@@ -1031,6 +1158,43 @@ function injectPlaylistDirectoryDjPanel(root) {
     const list = panel.querySelector(`details[data-section='${key}'] .${MODULE_ID}-sidebar-list`);
     if (list) list.innerHTML = html;
   });
+}
+
+function injectPlaylistDirectoryNativePlaylistsPanel(root) {
+  const directoryList = root.querySelector(".directory-list");
+  if (!directoryList) return;
+
+  let panel = root.querySelector(`.${MODULE_ID}-native-playlists-panel`);
+  if (!panel) {
+    panel = document.createElement("section");
+    panel.classList.add(`${MODULE_ID}-native-playlists-panel`);
+    panel.innerHTML = `
+      <header class="playlist-header" data-action="toggle-native-playlists-panel">
+        <i class="expand fa-solid fa-angle-up" inert></i>
+        <strong>Foundry Playlists</strong>
+      </header>
+      <div class="expandable">
+        <div class="wrapper"></div>
+      </div>
+    `;
+
+    const panelHeader = panel.querySelector("header[data-action='toggle-native-playlists-panel']");
+    panelHeader?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      sidebarUiState.nativePlaylistsCollapsed = !sidebarUiState.nativePlaylistsCollapsed;
+      panel.classList.toggle("expanded", !sidebarUiState.nativePlaylistsCollapsed);
+    });
+
+    directoryList.before(panel);
+  }
+
+  const wrapper = panel.querySelector(".expandable > .wrapper");
+  if (wrapper && directoryList.parentElement !== wrapper) {
+    wrapper.append(directoryList);
+  }
+
+  panel.classList.toggle("expanded", !sidebarUiState.nativePlaylistsCollapsed);
 }
 function buildSidebarPlaylistsHtml(playlists, tracks) {
   if (!playlists.length) {
@@ -1082,7 +1246,7 @@ function buildSidebarPlaylistsHtml(playlists, tracks) {
             </div>
             <div class="meta">
               <strong>${escapeHtml(playlist.name || "Без названия")}</strong>
-              <span>${count} tracks | loop: ${loopEnabled ? "on" : "off"} | shuffle: ${shuffleEnabled ? "on" : "off"}</span>
+              <span>${count} tracks | loop: ${loopEnabled ? "Yes" : "No"} | shuffle: ${shuffleEnabled ? "Yes" : "No"}</span>
             </div>
           </div>
           <div class="${MODULE_ID}-sidebar-sublist ${expanded ? "is-open" : ""}">
@@ -1322,142 +1486,100 @@ function syncManagerRangeControl(root, inputSelector, labelSelector, value, form
   }
 }
 
-function updateCurrentPlaybackLoopMode(loopEnabled) {
+async function updateCurrentPlaybackLoopMode(loopEnabled) {
   const current = playbackState.current;
   if (!current?.sound) return;
   current.loopEnabled = loopEnabled;
 
+  const clipStart = Number.isFinite(current.clipStart) ? current.clipStart : 0;
+  const hasClip = Number.isFinite(current.clipEnd) && current.clipEnd > clipStart;
+  const nativeLoopEnabled = loopEnabled && !hasClip;
+
+  if (hasClip && !current.paused) {
+    const track = getTracks().find((entry) => entry.id === current.trackId);
+    if (track) {
+      const resumeAtRaw = getCurrentAbsoluteTime(current);
+      let resumeAt = Number.isFinite(resumeAtRaw) ? resumeAtRaw : clipStart;
+      if (loopEnabled) {
+        const clipDuration = current.clipEnd - clipStart;
+        const passed = Math.max(0, resumeAt - clipStart);
+        resumeAt = clipStart + (passed % clipDuration);
+      } else {
+        resumeAt = Math.min(resumeAt, Math.max(clipStart, current.clipEnd - 0.01));
+      }
+
+      const queue = Array.isArray(current.queue) && current.queue.length ? [...current.queue] : [track.id];
+      await playTrack(track, {
+        mode: current.mode ?? "track",
+        playlistId: current.playlistId ?? null,
+        queue,
+        index: Number.isFinite(current.index) ? current.index : 0,
+        playlistLoop: Boolean(current.playlistLoop),
+        playlistShuffle: Boolean(current.playlistShuffle),
+        loopOverride: loopEnabled,
+        playOffset: resumeAt,
+      });
+      return;
+    }
+  }
+
   try {
-    current.sound.loop = loopEnabled;
+    current.sound.loop = nativeLoopEnabled;
   } catch (_error) {
     // no-op
   }
 
   try {
-    if (current.sound.element) current.sound.element.loop = loopEnabled;
+    if (current.sound.element) current.sound.element.loop = nativeLoopEnabled;
   } catch (_error) {
     // no-op
   }
 
-  if (!loopEnabled && Number.isFinite(current.clipEnd)) {
-    clearClipEndMonitor(current);
-    if (!current.paused) current.clipMonitorId = startClipEndMonitor(current.sound, current.clipEnd, current.token);
-  }
+  bindSegmentLoopToSound(current.sound, {
+    enabled: loopEnabled && hasClip,
+    start: clipStart,
+    end: current.clipEnd,
+    label: "music-toggle",
+    onLoop: (loopStart) => markSegmentLoopRestart(current, loopStart),
+  });
 
-  if (loopEnabled) {
-    clearClipEndMonitor(current);
+  clearClipEndMonitor(current);
+  if (hasClip && !loopEnabled && !current.paused) {
+    current.clipMonitorId = startClipEndMonitor(current.sound, clipStart, current.clipEnd, current.token);
   }
 }
 
 function updateAmbiencePlaybackLoopMode(entry, loopEnabled) {
   if (!entry?.sound) return;
   entry.loopEnabled = loopEnabled;
+  const clipStart = Number.isFinite(entry.clipStart) ? entry.clipStart : 0;
+  const hasClip = Number.isFinite(entry.clipEnd) && entry.clipEnd > clipStart;
+  const nativeLoopEnabled = loopEnabled && !hasClip;
 
   try {
-    entry.sound.loop = loopEnabled;
+    entry.sound.loop = nativeLoopEnabled;
   } catch (_error) {
     // no-op
   }
 
   try {
-    if (entry.sound.element) entry.sound.element.loop = loopEnabled;
+    if (entry.sound.element) entry.sound.element.loop = nativeLoopEnabled;
   } catch (_error) {
     // no-op
   }
 
-  if (!loopEnabled && Number.isFinite(entry.clipEnd)) {
-    clearAmbienceClipEndMonitor(entry);
-    if (!entry.paused) entry.clipMonitorId = startAmbienceClipEndMonitor(entry.sound, entry.clipEnd, entry.token);
-    return;
+  bindSegmentLoopToSound(entry.sound, {
+    enabled: loopEnabled && hasClip,
+    start: clipStart,
+    end: entry.clipEnd,
+    label: "ambience-toggle",
+    onLoop: (loopStart) => markSegmentLoopRestart(entry, loopStart),
+  });
+
+  clearAmbienceClipEndMonitor(entry);
+  if (hasClip && !loopEnabled && !entry.paused) {
+    entry.clipMonitorId = startAmbienceClipEndMonitor(entry.sound, clipStart, entry.clipEnd, entry.token);
   }
-
-  if (loopEnabled) {
-    clearAmbienceClipEndMonitor(entry);
-  }
-}
-
-function injectPlaylistSoundConfig(app, root) {
-  if (root.querySelector(`.${MODULE_ID}-sound-settings`)) return;
-
-  const soundDoc = app?.document;
-  const currentRate = normalizeRate(Number(soundDoc?.getFlag(MODULE_ID, "rate") ?? 1));
-  const clipStart = soundDoc?.getFlag(MODULE_ID, "clipStart") ?? "";
-  const clipEnd = soundDoc?.getFlag(MODULE_ID, "clipEnd") ?? "";
-
-  const box = document.createElement("div");
-  box.classList.add("form-group-stacked", `${MODULE_ID}-sound-settings`);
-  box.innerHTML = `
-    <fieldset>
-      <legend>TS-DJ-MUSIC</legend>
-      <div class="form-group">
-        <label>Скорость (по умолчанию)</label>
-        <div class="form-fields">
-          <select name="flags.${MODULE_ID}.rate">
-            ${RATE_VALUES.map((rate) => `<option value="${rate}" ${Number(rate) === currentRate ? "selected" : ""}>${formatRate(rate)}x</option>`).join("")}
-          </select>
-        </div>
-        <p class="notes">Диапазон: 0.5 - 2.0, шаг 0.25. Можно менять и во время проигрывания.</p>
-      </div>
-      <div class="form-group">
-        <label>Начало отрезка</label>
-        <div class="form-fields">
-          <input type="text" name="flags.${MODULE_ID}.clipStart" value="${escapeHtml(String(clipStart))}" placeholder="00:03 или 3">
-        </div>
-      </div>
-      <div class="form-group">
-        <label>Конец отрезка</label>
-        <div class="form-fields">
-          <input type="text" name="flags.${MODULE_ID}.clipEnd" value="${escapeHtml(String(clipEnd))}" placeholder="01:20 или 80">
-        </div>
-        <p class="notes">Формат времени: <code>секунды</code>, <code>мм:сс</code> или <code>чч:мм:сс</code>.</p>
-      </div>
-    </fieldset>
-  `;
-
-  const anchor = root.querySelector("[name='path']")?.closest(".form-group") ?? root.querySelector(".form-group:last-of-type");
-  if (anchor) anchor.after(box);
-}
-
-async function applyPlaylistSoundSettings(soundDoc, { restart = false } = {}) {
-  const sound = soundDoc?.sound;
-  if (!sound) return;
-
-  const defaultRate = normalizeRate(Number(soundDoc.getFlag(MODULE_ID, "rate") ?? 1));
-  const liveRate = normalizeRate(getLiveRate());
-  const finalRate = liveRate !== 1 ? liveRate : defaultRate;
-
-  const clipStartRaw = soundDoc.getFlag(MODULE_ID, "clipStart");
-  const clipEndRaw = soundDoc.getFlag(MODULE_ID, "clipEnd");
-  const clipStart = parseTimeInput(clipStartRaw);
-  const clipEnd = parseTimeInput(clipEndRaw);
-
-  const hasStart = Number.isFinite(clipStart) && clipStart >= 0;
-  const offset = hasStart ? clipStart : 0;
-  const hasEnd = Number.isFinite(clipEnd) && clipEnd > offset;
-
-  if (restart && (hasStart || hasEnd)) {
-    const playOptions = {
-      autoplay: true,
-      loop: Boolean(soundDoc.repeat),
-      volume: Number(soundDoc.effectiveVolume ?? soundDoc.volume ?? 1),
-    };
-
-    if (hasStart) playOptions.offset = offset;
-
-    if (hasEnd) {
-      if (playOptions.loop) {
-        playOptions.loopStart = offset;
-        playOptions.loopEnd = clipEnd;
-      } else {
-        playOptions.duration = Math.max(0.01, (clipEnd - offset) / finalRate);
-      }
-    }
-
-    await sound.play(playOptions);
-  }
-
-  applySoundRate(sound, finalRate);
-  setPlaylistClipWatcher(soundDoc, !soundDoc.repeat && hasEnd ? clipEnd : null);
 }
 
 function applySoundRate(sound, rate) {
@@ -1487,6 +1609,120 @@ function applySoundRate(sound, rate) {
   } catch (_error) {
     // no-op
   }
+}
+
+function clearSegmentLoopBinding(sound) {
+  const intervalId = segmentLoopIntervals.get(sound);
+  if (!intervalId) return;
+  window.clearInterval(intervalId);
+  segmentLoopIntervals.delete(sound);
+}
+
+function hasSeekablePlaybackHandle(sound) {
+  if (!sound) return false;
+  if (typeof sound.seek === "function") return true;
+  if (Number.isFinite(sound.currentTime)) return true;
+  if (Number.isFinite(sound.element?.currentTime)) return true;
+  if (Number.isFinite(sound.sourceElement?.currentTime)) return true;
+  return false;
+}
+
+function hasSegmentLoopActive(state) {
+  if (!state?.loopEnabled) return false;
+  const clipStart = Number.isFinite(state.clipStart) ? state.clipStart : 0;
+  return Number.isFinite(state.clipEnd) && state.clipEnd > clipStart;
+}
+
+function markSegmentLoopRestart(state, loopStart) {
+  if (!state) return;
+  state.loopRestarting = true;
+  state.ignoreEndedUntil = Date.now() + 1200;
+  state.timingBaseAbs = loopStart;
+  state.timingBaseMs = Date.now();
+  window.setTimeout(() => {
+    if (state) state.loopRestarting = false;
+  }, 250);
+}
+
+async function ensureSoundKeepsPlaying(sound) {
+  if (!sound) return false;
+
+  try {
+    if (sound.element && typeof sound.element.play === "function" && (sound.element.paused || sound.element.ended)) {
+      await sound.element.play();
+      return true;
+    }
+  } catch (_error) {
+    // no-op
+  }
+
+  try {
+    if (sound.sourceElement && typeof sound.sourceElement.play === "function" && (sound.sourceElement.paused || sound.sourceElement.ended)) {
+      await sound.sourceElement.play();
+      return true;
+    }
+  } catch (_error) {
+    // no-op
+  }
+
+  return false;
+}
+
+function bindSegmentLoopToSound(sound, { enabled = false, start = 0, end = null, label = "music", onLoop = null } = {}) {
+  clearSegmentLoopBinding(sound);
+
+  const safeStart = Number(start);
+  const safeEnd = Number(end);
+  const hasSegment = Boolean(enabled) && Number.isFinite(safeStart) && Number.isFinite(safeEnd) && safeEnd > safeStart;
+  if (!hasSegment) return false;
+  if (!hasSeekablePlaybackHandle(sound)) {
+    console.warn(`${MODULE_ID} | clip loop unavailable`, {
+      label,
+      start: safeStart,
+      end: safeEnd,
+      hasSound: Boolean(sound),
+    });
+    return false;
+  }
+
+  const pollMs = 80;
+  const toleranceSec = 0.05;
+  let cooldownUntil = 0;
+  let restarting = false;
+  const intervalId = window.setInterval(async () => {
+    if (restarting) return;
+    if (Date.now() < cooldownUntil) return;
+
+    const currentTime = getSoundCurrentTime(sound);
+    if (!Number.isFinite(currentTime)) return;
+    if ((currentTime + toleranceSec) < safeEnd) return;
+
+    restarting = true;
+    const rewound = seekSoundToTime(sound, safeStart);
+    if (rewound) {
+      await ensureSoundKeepsPlaying(sound);
+      cooldownUntil = Date.now() + 250;
+      if (typeof onLoop === "function") onLoop(safeStart);
+      restarting = false;
+      return;
+    }
+
+    clearSegmentLoopBinding(sound);
+    console.warn(`${MODULE_ID} | clip loop seek failed`, {
+      label,
+      start: safeStart,
+      end: safeEnd,
+    });
+    restarting = false;
+  }, pollMs);
+
+  segmentLoopIntervals.set(sound, intervalId);
+  console.warn(`${MODULE_ID} | clip loop bound`, {
+    label,
+    start: safeStart,
+    end: safeEnd,
+  });
+  return true;
 }
 
 function applySoundVolume(sound, volume) {
@@ -1687,7 +1923,7 @@ async function toggleTrackLoop(trackId) {
   await setTracks(tracks);
 
   if (playbackState.current?.trackId === trackId) {
-    updateCurrentPlaybackLoopMode(loopEnabled);
+    await updateCurrentPlaybackLoopMode(loopEnabled);
   }
 
 }
@@ -1770,7 +2006,6 @@ async function setLiveRate(rate, { apply = true, sync = true } = {}) {
       applySoundRate(playbackState.current.sound, appliedRate);
       updateCurrentTimingRate(appliedRate);
     }
-    applyRateToPlayingPlaylistSounds(normalized);
   }
 
   if (sync) {
@@ -1836,24 +2071,21 @@ function applyMusicVolumeToCurrentPlayback({ volume = getLiveMusicVolume(), forc
   applySoundVolume(current.sound, volume);
 }
 
-function applyRateToPlayingPlaylistSounds(rate) {
-  for (const playlist of game.playlists.contents) {
-    for (const soundDoc of playlist.sounds.contents) {
-      if (!soundDoc.playing || !soundDoc.sound) continue;
-      applySoundRate(soundDoc.sound, rate);
-    }
-  }
-}
-
 function refreshPlaylistDirectoryUi() {
   enforceManagerAccessState();
   refreshManagerRuntimeUi();
+  if (appInstance?.rendered) {
+    void appInstance.refreshStorageCards();
+  }
 
   const root = getRoot(ui.playlists?.element);
   if (root) {
+    initializeSidebarUiStateFromSettings();
+    root.classList.add(PLAYLIST_DIRECTORY_SCROLL_CLASS);
     injectPlaylistDirectoryButton(root);
     injectPlaylistDirectoryRateControl(root);
     injectPlaylistDirectoryDjPanel(root);
+    injectPlaylistDirectoryNativePlaylistsPanel(root);
     return;
   }
   ui.playlists?.render(false);
@@ -1899,9 +2131,9 @@ async function playTrackById(trackId, options = {}) {
     return;
   }
 
-  await playTrack(track, playOptions);
+  const started = await playTrack(track, playOptions);
 
-  if (sync) {
+  if (sync && started) {
     emitModuleSocketEvent(SOCKET_ACTIONS.playTrack, {
       trackId,
       options: sanitizePlayOptions(playOptions),
@@ -1950,7 +2182,7 @@ async function playPlaylistById(playlistId, options = {}) {
     ? playlistLoopOverride
     : Boolean(playlist.loop);
   if (!firstTrack) return;
-  await playTrack(firstTrack, {
+  const started = await playTrack(firstTrack, {
     mode: "playlist",
     playlistId: playlist.id,
     queue,
@@ -1960,7 +2192,7 @@ async function playPlaylistById(playlistId, options = {}) {
     loopOverride: false,
   });
 
-  if (sync) {
+  if (sync && started) {
     emitModuleSocketEvent(SOCKET_ACTIONS.playPlaylist, {
       playlistId,
       options: sanitizePlayOptions({
@@ -2010,7 +2242,7 @@ async function playRelativeTrackInCurrentPlaylist(direction = 1, options = {}) {
   const nextTrack = trackMap.get(queue[targetIndex]);
   if (!nextTrack) return;
 
-  await playTrack(nextTrack, {
+  const started = await playTrack(nextTrack, {
     mode: "playlist",
     playlistId: current.playlistId ?? null,
     queue,
@@ -2020,7 +2252,7 @@ async function playRelativeTrackInCurrentPlaylist(direction = 1, options = {}) {
     loopOverride: false,
   });
 
-  if (sync) {
+  if (sync && started) {
     emitModuleSocketEvent(SOCKET_ACTIONS.playRelativeTrack, { direction: step });
   }
 }
@@ -2034,9 +2266,9 @@ async function playAmbienceById(trackId, options = {}) {
     ui.notifications.warn("TS-DJ-MUSIC: ambience track not found");
     return;
   }
-  await playAmbienceTrack(track, playOptions);
+  const started = await playAmbienceTrack(track, playOptions);
 
-  if (sync) {
+  if (sync && started) {
     emitModuleSocketEvent(SOCKET_ACTIONS.playAmbienceTrack, {
       trackId,
       options: sanitizePlayOptions(playOptions),
@@ -2083,7 +2315,7 @@ async function playAmbiencePlaylistById(playlistId, options = {}) {
     ? playlistLoopOverride
     : Boolean(playlist.loop);
   if (!firstTrack) return;
-  await playAmbienceTrack(firstTrack, {
+  const started = await playAmbienceTrack(firstTrack, {
     mode: "playlist",
     playlistId: playlist.id,
     queue,
@@ -2093,7 +2325,7 @@ async function playAmbiencePlaylistById(playlistId, options = {}) {
     loopOverride: false,
   });
 
-  if (sync) {
+  if (sync && started) {
     emitModuleSocketEvent(SOCKET_ACTIONS.playAmbiencePlaylist, {
       playlistId,
       options: sanitizePlayOptions({
@@ -2125,7 +2357,7 @@ async function playTrack(track, options = {}) {
   const file = files.find((entry) => entry.id === track.fileId);
   if (!file?.path) {
     ui.notifications.warn("TS-DJ-MUSIC: для трека не указан файл");
-    return;
+    return false;
   }
 
   const mode = options.mode ?? "track";
@@ -2146,12 +2378,20 @@ async function playTrack(track, options = {}) {
   const hasEnd = Number.isFinite(clipEnd) && clipEnd > clipStart;
 
   const loop = options.loopOverride ?? Boolean(track.loop);
-  await stopPlayback({ suppressUiRefresh: true, sync: false });
+  const requestId = playbackState.requestId + 1;
+  playbackState.requestId = requestId;
+  playbackState.loading = true;
+  await stopPlayback({ suppressUiRefresh: true, sync: false, cancelPending: false });
 
   const sound = await preloadSoundWithFileCache(file.path, { channel: "music" });
+  if (playbackState.requestId !== requestId) {
+    forceStopSoundNodes(sound);
+    return false;
+  }
   if (!sound) {
+    playbackState.loading = false;
     ui.notifications.error(`TS-DJ-MUSIC: не удалось загрузить файл ${file.path}`);
-    return;
+    return false;
   }
 
   const token = foundry.utils.randomID();
@@ -2159,10 +2399,11 @@ async function playTrack(track, options = {}) {
   const defaultRate = normalizeRate(Number(track.rate ?? 1));
   const liveRate = getLiveRate();
   const finalRate = liveRate !== 1 ? liveRate : defaultRate;
+  const nativeLoop = loop && !hasEnd;
 
   const playOptions = {
     autoplay: true,
-    loop,
+    loop: nativeLoop,
     volume: liveMusicVolume,
     onended: () => {
       handleTrackEnded(token).catch((error) => console.warn(`${MODULE_ID} | onended failed`, error));
@@ -2172,10 +2413,7 @@ async function playTrack(track, options = {}) {
   if (offset > 0) playOptions.offset = offset;
 
   if (hasEnd) {
-    if (loop) {
-      playOptions.loopStart = clipStart;
-      playOptions.loopEnd = clipEnd;
-    } else {
+    if (!loop) {
       playOptions.duration = Math.max(0.01, (clipEnd - offset) / finalRate);
     }
   }
@@ -2183,13 +2421,29 @@ async function playTrack(track, options = {}) {
   try {
     await playSoundWithRetry(sound, playOptions);
   } catch (error) {
+    if (playbackState.requestId !== requestId) {
+      forceStopSoundNodes(sound);
+      return false;
+    }
+    playbackState.loading = false;
     console.warn(`${MODULE_ID} | failed to switch track`, error);
     ui.notifications.warn("TS-DJ-MUSIC: playback blocked on this client. Click inside Foundry tab and try again.");
-    return;
+    return false;
+  }
+
+  if (playbackState.requestId !== requestId) {
+    try {
+      await sound.stop();
+    } catch (_error) {
+      // no-op
+    }
+    forceStopSoundNodes(sound);
+    return false;
   }
 
   applySoundRate(sound, finalRate);
   applySoundVolume(sound, liveMusicVolume);
+  playbackState.loading = false;
 
   playbackState.current = {
     token,
@@ -2208,6 +2462,8 @@ async function playTrack(track, options = {}) {
     ending: false,
     paused: false,
     pausedAt: null,
+    loopRestarting: false,
+    ignoreEndedUntil: 0,
     suppressNextEnd: false,
     defaultRate,
     timingBaseAbs: offset,
@@ -2215,12 +2471,25 @@ async function playTrack(track, options = {}) {
     timingRate: finalRate,
   };
 
+  bindSegmentLoopToSound(sound, {
+    enabled: loop && hasEnd,
+    start: clipStart,
+    end: clipEnd,
+    label: "music-play",
+    onLoop: (loopStart) => {
+      const current = playbackState.current;
+      if (!current || current.token !== token) return;
+      markSegmentLoopRestart(current, loopStart);
+    },
+  });
+
   if (hasEnd && !loop) {
-    playbackState.current.clipMonitorId = startClipEndMonitor(sound, clipEnd, token);
+    playbackState.current.clipMonitorId = startClipEndMonitor(sound, clipStart, clipEnd, token);
   }
 
   refreshPlaylistDirectoryUi();
   startSidebarProgressTicker();
+  return true;
 }
 
 async function playAmbienceTrack(track, options = {}) {
@@ -2228,7 +2497,7 @@ async function playAmbienceTrack(track, options = {}) {
   const file = files.find((entry) => entry.id === track.fileId);
   if (!file?.path) {
     ui.notifications.warn("TS-DJ-MUSIC: ambience file is missing");
-    return;
+    return false;
   }
 
   const allowConcurrent = getAmbienceAllowConcurrent();
@@ -2249,11 +2518,23 @@ async function playAmbienceTrack(track, options = {}) {
   const offset = hasStart ? clipStart : 0;
   const hasEnd = Number.isFinite(clipEnd) && clipEnd > offset;
   const loop = options.loopOverride ?? Boolean(track.loop);
+  const requestId = ambienceState.nextRequestId + 1;
+  ambienceState.nextRequestId = requestId;
+  ambienceState.pending.set(requestId, {
+    trackId: track.id,
+    playlistId,
+    mode,
+  });
 
   const sound = await preloadSoundWithFileCache(file.path, { channel: "environment" });
+  if (!ambienceState.pending.has(requestId)) {
+    forceStopSoundNodes(sound);
+    return false;
+  }
   if (!sound) {
+    ambienceState.pending.delete(requestId);
     ui.notifications.error(`TS-DJ-MUSIC: failed to load ambience ${file.path}`);
-    return;
+    return false;
   }
 
   const token = foundry.utils.randomID();
@@ -2261,9 +2542,10 @@ async function playAmbienceTrack(track, options = {}) {
   const defaultRate = normalizeRate(Number(track.rate ?? 1));
   const liveRate = getLiveRate();
   const finalRate = liveRate !== 1 ? liveRate : defaultRate;
+  const nativeLoop = loop && !hasEnd;
   const playOptions = {
     autoplay: true,
-    loop,
+    loop: nativeLoop,
     volume: ambienceVolume,
     onended: () => {
       handleAmbienceEnded(token).catch((error) => console.warn(`${MODULE_ID} | ambience onended failed`, error));
@@ -2271,10 +2553,7 @@ async function playAmbienceTrack(track, options = {}) {
   };
   if (hasStart) playOptions.offset = offset;
   if (hasEnd) {
-    if (loop) {
-      playOptions.loopStart = offset;
-      playOptions.loopEnd = clipEnd;
-    } else {
+    if (!loop) {
       playOptions.duration = Math.max(0.01, (clipEnd - offset) / finalRate);
     }
   }
@@ -2282,10 +2561,27 @@ async function playAmbienceTrack(track, options = {}) {
   try {
     await playSoundWithRetry(sound, playOptions);
   } catch (error) {
+    const stillPending = ambienceState.pending.has(requestId);
+    ambienceState.pending.delete(requestId);
+    if (!stillPending) {
+      forceStopSoundNodes(sound);
+      return false;
+    }
     console.warn(`${MODULE_ID} | failed to switch ambience`, error);
     ui.notifications.warn("TS-DJ-MUSIC: ambience playback blocked on this client. Click inside Foundry tab and try again.");
-    return;
+    return false;
   }
+
+  if (!ambienceState.pending.has(requestId)) {
+    try {
+      await sound.stop();
+    } catch (_error) {
+      // no-op
+    }
+    forceStopSoundNodes(sound);
+    return false;
+  }
+  ambienceState.pending.delete(requestId);
 
   applySoundRate(sound, finalRate);
 
@@ -2306,15 +2602,34 @@ async function playAmbienceTrack(track, options = {}) {
     suppressNextEnd: false,
     ending: false,
     paused: false,
+    loopRestarting: false,
+    ignoreEndedUntil: 0,
+    timingBaseAbs: offset,
+    timingBaseMs: Date.now(),
+    timingRate: finalRate,
   };
   ambienceState.active.set(token, entry);
+
+  bindSegmentLoopToSound(sound, {
+    enabled: loop && hasEnd,
+    start: offset,
+    end: clipEnd,
+    label: "ambience-play",
+    onLoop: (loopStart) => {
+      const activeEntry = ambienceState.active.get(token);
+      if (!activeEntry) return;
+      markSegmentLoopRestart(activeEntry, loopStart);
+    },
+  });
+
   applyEnvironmentVolumeToActiveAmbience({ force: true });
 
   if (hasEnd && !loop) {
-    entry.clipMonitorId = startAmbienceClipEndMonitor(sound, clipEnd, token);
+    entry.clipMonitorId = startAmbienceClipEndMonitor(sound, offset, clipEnd, token);
   }
 
   refreshPlaylistDirectoryUi();
+  return true;
 }
 
 async function handleTrackEnded(token, { forceStop = false } = {}) {
@@ -2324,10 +2639,17 @@ async function handleTrackEnded(token, { forceStop = false } = {}) {
     current.suppressNextEnd = false;
     return;
   }
+  if (hasSegmentLoopActive(current)) {
+    return;
+  }
+  if (Number.isFinite(current.ignoreEndedUntil) && Date.now() < current.ignoreEndedUntil) {
+    return;
+  }
   if (current.ending) return;
 
   current.ending = true;
   clearClipEndMonitor(current);
+  clearSegmentLoopBinding(current.sound);
 
   if (forceStop) {
     try {
@@ -2397,10 +2719,14 @@ async function handleTrackEnded(token, { forceStop = false } = {}) {
   stopSidebarProgressTicker();
 }
 
-async function stopPlayback({ suppressUiRefresh = false, sync = true } = {}) {
+async function stopPlayback({ suppressUiRefresh = false, sync = true, cancelPending = true } = {}) {
   if (sync && !ensureModuleControlAccess()) return;
   if (sync) {
     emitModuleSocketEvent(SOCKET_ACTIONS.stopPlayback);
+  }
+  if (cancelPending) {
+    playbackState.requestId += 1;
+    playbackState.loading = false;
   }
 
   const current = playbackState.current;
@@ -2416,12 +2742,14 @@ async function stopPlayback({ suppressUiRefresh = false, sync = true } = {}) {
   // Manual stop/switch: do not allow onended auto-advance logic to run.
   current.suppressNextEnd = true;
   clearClipEndMonitor(current);
+  clearSegmentLoopBinding(current.sound);
 
   try {
     await current.sound.stop();
   } catch (_error) {
     // no-op
   }
+  forceStopSoundNodes(current.sound);
   await waitMs(25);
 
   playbackState.current = null;
@@ -2432,10 +2760,13 @@ async function stopPlayback({ suppressUiRefresh = false, sync = true } = {}) {
 }
 
 async function stopAllAmbience(options = {}) {
-  const { sync = true } = options;
+  const { sync = true, cancelPending = true } = options;
   if (sync && !ensureModuleControlAccess()) return;
   if (sync) {
     emitModuleSocketEvent(SOCKET_ACTIONS.stopAmbienceAll);
+  }
+  if (cancelPending) {
+    clearPendingAmbienceRequests();
   }
 
   const active = Array.from(ambienceState.active.values());
@@ -2446,10 +2777,13 @@ async function stopAllAmbience(options = {}) {
 }
 
 async function stopAmbienceByTrackId(trackId, options = {}) {
-  const { sync = true } = options;
+  const { sync = true, cancelPending = true } = options;
   if (sync && !ensureModuleControlAccess()) return;
   if (sync) {
     emitModuleSocketEvent(SOCKET_ACTIONS.stopAmbienceTrack, { trackId });
+  }
+  if (cancelPending) {
+    clearPendingAmbienceRequests((entry) => entry.trackId === trackId);
   }
 
   const matches = Array.from(ambienceState.active.values()).filter((entry) => entry.trackId === trackId);
@@ -2460,10 +2794,13 @@ async function stopAmbienceByTrackId(trackId, options = {}) {
 }
 
 async function stopAmbienceByPlaylistId(playlistId, options = {}) {
-  const { sync = true } = options;
+  const { sync = true, cancelPending = true } = options;
   if (sync && !ensureModuleControlAccess()) return;
   if (sync) {
     emitModuleSocketEvent(SOCKET_ACTIONS.stopAmbiencePlaylist, { playlistId });
+  }
+  if (cancelPending) {
+    clearPendingAmbienceRequests((entry) => entry.mode === "playlist" && entry.playlistId === playlistId);
   }
 
   const matches = Array.from(ambienceState.active.values()).filter(
@@ -2479,11 +2816,14 @@ async function stopAmbienceEntry(entry) {
   if (!entry?.sound) return;
   entry.suppressNextEnd = true;
   clearAmbienceClipEndMonitor(entry);
+  clearSegmentLoopBinding(entry.sound);
   try {
     await entry.sound.stop();
   } catch (_error) {
     // no-op
   }
+  forceStopSoundNodes(entry.sound);
+  await waitMs(25);
   ambienceState.active.delete(entry.token);
 }
 
@@ -2496,9 +2836,16 @@ async function handleAmbienceEnded(token, { forceStop = false } = {}) {
     refreshPlaylistDirectoryUi();
     return;
   }
+  if (hasSegmentLoopActive(entry)) {
+    return;
+  }
+  if (Number.isFinite(entry.ignoreEndedUntil) && Date.now() < entry.ignoreEndedUntil) {
+    return;
+  }
   if (entry.ending) return;
   entry.ending = true;
   clearAmbienceClipEndMonitor(entry);
+  clearSegmentLoopBinding(entry.sound);
 
   if (forceStop) {
     try {
@@ -2560,6 +2907,7 @@ async function pauseCurrentPlayback(options = {}) {
   current.pausedAt = getCurrentAbsoluteTime(current);
   current.paused = true;
   clearClipEndMonitor(current);
+  clearSegmentLoopBinding(current.sound);
 
   try {
     await current.sound.stop();
@@ -2921,6 +3269,11 @@ class TsDjMusicApp extends Application {
     }
 
     return `Трек: ${currentTrack?.name ?? "?"}`;
+  }
+
+  async refreshStorageCards(cardIds = Object.values(MANAGER_CARD_IDS)) {
+    if (!this.rendered) return;
+    await this.#refreshCards(cardIds);
   }
 
   async #refreshCards(cardIds = [], { refreshToolbar = false } = {}) {
@@ -3300,19 +3653,79 @@ async function promptTrackData(current, files) {
           <select name="rate">${rateOptions}</select>
         </div>
       </div>
+      <div class="form-group">
+        <div class="form-fields">
+          <button type="button" class="ts-dj-preview-button" data-action="preview-track" title="Превью" aria-label="Превью"><i class="fas fa-play"></i></button>
+        </div>
+      </div>
     </form>
   `;
 
   const result = await promptDialog("Трек", content, {
     render: (html) => {
-      if (!isNewTrack) return;
-
       const form = html[0]?.querySelector("form");
       const fileSelect = form?.querySelector("select[name='fileId']");
       const nameInput = form?.querySelector("input[name='name']");
       const startInput = form?.querySelector("input[name='start']");
       const endInput = form?.querySelector("input[name='end']");
-      if (!fileSelect || !nameInput || !startInput || !endInput) return;
+      const rateSelect = form?.querySelector("select[name='rate']");
+      const previewButton = form?.querySelector("button[data-action='preview-track']");
+      if (!fileSelect || !nameInput || !startInput || !endInput || !rateSelect || !previewButton) return;
+
+      const setPreviewButtonState = (active) => {
+        previewButton.dataset.previewState = active ? "playing" : "idle";
+        previewButton.title = active ? "Остановить превью" : "Превью";
+        previewButton.setAttribute("aria-label", active ? "Остановить превью" : "Превью");
+        previewButton.innerHTML = active
+          ? "<i class='fas fa-stop'></i>"
+          : "<i class='fas fa-play'></i>";
+      };
+      const stopPreview = () =>
+        stopTrackPreview().catch((error) => console.warn(`${MODULE_ID} | failed to stop track preview`, error));
+
+      trackPreviewState.onStateChange = (active) => {
+        if (!previewButton.isConnected) return;
+        setPreviewButtonState(active);
+      };
+      setPreviewButtonState(false);
+      stopPreview();
+
+      previewButton.addEventListener("click", async () => {
+        if (trackPreviewState.loading || trackPreviewState.sound) {
+          await stopPreview();
+          return;
+        }
+
+        const file = files.find((entry) => entry.id === String(fileSelect.value ?? ""));
+        if (!file?.path) {
+          ui.notifications.warn("Нужно выбрать существующий файл");
+          return;
+        }
+
+        try {
+          await playTrackPreview({
+            path: file.path,
+            start: startInput.value,
+            end: endInput.value,
+            rate: rateSelect.value,
+          });
+        } catch (error) {
+          console.warn(`${MODULE_ID} | failed to start track preview`, error);
+          ui.notifications.warn("TS-DJ-MUSIC: не удалось запустить превью на этом клиенте.");
+          setPreviewButtonState(false);
+        }
+      });
+
+      const stopPreviewOnChange = () => {
+        if (!trackPreviewState.sound) return;
+        stopPreview();
+      };
+      fileSelect.addEventListener("change", stopPreviewOnChange);
+      startInput.addEventListener("input", stopPreviewOnChange);
+      endInput.addEventListener("input", stopPreviewOnChange);
+      rateSelect.addEventListener("change", stopPreviewOnChange);
+
+      if (!isNewTrack) return;
 
       const initialFileId = String(fileSelect.value ?? "");
       const initialDefaultName = getDefaultNameFromFileEntry(files.find((entry) => entry.id === initialFileId));
@@ -3368,6 +3781,10 @@ async function promptTrackData(current, files) {
       applyDefaults(String(fileSelect.value ?? "")).catch((error) =>
         console.warn(`${MODULE_ID} | failed to set initial track defaults`, error)
       );
+    },
+    close: async () => {
+      trackPreviewState.onStateChange = null;
+      await stopTrackPreview({ suppressUiUpdate: true });
     },
   });
   if (!result) return null;
@@ -3483,7 +3900,7 @@ async function promptPlaylistData(current, tracks) {
   };
 }
 
-async function promptDialog(title, content, { render } = {}) {
+async function promptDialog(title, content, { render, close: onClose } = {}) {
   return new Promise((resolve) => {
     let finished = false;
 
@@ -3518,6 +3935,15 @@ async function promptDialog(title, content, { render } = {}) {
       },
       default: "save",
       close: () => {
+        if (typeof onClose === "function") {
+          try {
+            Promise.resolve(onClose()).catch((error) => {
+              console.warn(`${MODULE_ID} | dialog close handler failed`, error);
+            });
+          } catch (error) {
+            console.warn(`${MODULE_ID} | dialog close handler failed`, error);
+          }
+        }
         if (!finished) resolve(null);
       },
     }).render(true);
@@ -3620,6 +4046,140 @@ async function preloadSoundWithFileCache(filePath, { channel = "music" } = {}) {
     sound = await preloadSoundForChannel(filePath, channel);
   }
   return sound;
+}
+
+async function stopTrackPreview({ suppressUiUpdate = false } = {}) {
+  const sound = trackPreviewState.sound;
+
+  trackPreviewState.requestId += 1;
+  trackPreviewState.loading = false;
+  trackPreviewState.sound = null;
+  trackPreviewState.token = null;
+
+  if (sound) {
+    clearSegmentLoopBinding(sound);
+    try {
+      await sound.stop();
+    } catch (_error) {
+      // no-op
+    }
+    forceStopSoundNodes(sound);
+    await waitMs(25);
+  }
+
+  if (!suppressUiUpdate && typeof trackPreviewState.onStateChange === "function") {
+    trackPreviewState.onStateChange(false);
+  }
+}
+
+async function playTrackPreview({ path, start, end, rate } = {}) {
+  if (!path) return false;
+
+  await stopTrackPreview({ suppressUiUpdate: true });
+  const requestId = trackPreviewState.requestId;
+  trackPreviewState.loading = true;
+  if (typeof trackPreviewState.onStateChange === "function") {
+    trackPreviewState.onStateChange(true);
+  }
+
+  const clipStartRaw = parseTimeInput(start);
+  const clipStart = Number.isFinite(clipStartRaw) && clipStartRaw >= 0 ? clipStartRaw : 0;
+  const clipEnd = parseTimeInput(end);
+  const hasEnd = Number.isFinite(clipEnd) && clipEnd > clipStart;
+  const finalRate = normalizeRate(Number(rate ?? 1));
+  const sound = await preloadSoundWithFileCache(path, { channel: "music" });
+  if (trackPreviewState.requestId !== requestId) {
+    forceStopSoundNodes(sound);
+    return false;
+  }
+  if (!sound) {
+    trackPreviewState.loading = false;
+    if (typeof trackPreviewState.onStateChange === "function") {
+      trackPreviewState.onStateChange(false);
+    }
+    throw new Error(`Track preview load failed for ${path}`);
+  }
+
+  const token = foundry.utils.randomID();
+  const volume = getLiveMusicVolume();
+  const playOptions = {
+    autoplay: true,
+    loop: false,
+    volume,
+    onended: () => {
+      if (trackPreviewState.token !== token) return;
+      trackPreviewState.loading = false;
+      trackPreviewState.sound = null;
+      trackPreviewState.token = null;
+      if (typeof trackPreviewState.onStateChange === "function") {
+        trackPreviewState.onStateChange(false);
+      }
+    },
+  };
+
+  if (clipStart > 0) playOptions.offset = clipStart;
+  if (hasEnd) {
+    playOptions.duration = Math.max(0.01, (clipEnd - clipStart) / finalRate);
+  }
+
+  trackPreviewState.loading = false;
+  trackPreviewState.sound = sound;
+  trackPreviewState.token = token;
+
+  try {
+    await playSoundWithRetry(sound, playOptions);
+  } catch (error) {
+    trackPreviewState.loading = false;
+    trackPreviewState.sound = null;
+    trackPreviewState.token = null;
+    if (typeof trackPreviewState.onStateChange === "function") {
+      trackPreviewState.onStateChange(false);
+    }
+    throw error;
+  }
+
+  if (trackPreviewState.requestId !== requestId || trackPreviewState.token !== token) {
+    await stopTrackPreview({ suppressUiUpdate: true });
+    if (typeof trackPreviewState.onStateChange === "function") {
+      trackPreviewState.onStateChange(false);
+    }
+    return false;
+  }
+
+  applySoundRate(sound, finalRate);
+  applySoundVolume(sound, volume);
+
+  if (typeof trackPreviewState.onStateChange === "function") {
+    trackPreviewState.onStateChange(true);
+  }
+  return true;
+}
+
+function forceStopSoundNodes(sound) {
+  if (!sound) return;
+
+  try {
+    if (sound.element && typeof sound.element.pause === "function") {
+      sound.element.pause();
+    }
+  } catch (_error) {
+    // no-op
+  }
+
+  try {
+    if (sound.sourceElement && typeof sound.sourceElement.pause === "function") {
+      sound.sourceElement.pause();
+    }
+  } catch (_error) {
+    // no-op
+  }
+}
+
+function clearPendingAmbienceRequests(predicate = null) {
+  for (const [requestId, entry] of ambienceState.pending.entries()) {
+    if (typeof predicate === "function" && !predicate(entry)) continue;
+    ambienceState.pending.delete(requestId);
+  }
 }
 
 async function ensureFileCachedAsBlobUrl(filePath) {
@@ -3755,7 +4315,7 @@ function clampNumber(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
-function startClipEndMonitor(sound, clipEnd, token) {
+function startClipEndMonitor(sound, clipStart, clipEnd, token) {
   const pollMs = 100;
   const toleranceSec = 0.05;
 
@@ -3766,21 +4326,25 @@ function startClipEndMonitor(sound, clipEnd, token) {
       return;
     }
 
-    const currentTime = getSoundCurrentTime(sound) ?? getEstimatedAbsoluteTime(current);
+    const currentTime = getSoundCurrentTime(current.sound ?? sound) ?? getEstimatedAbsoluteTime(current);
     if (!Number.isFinite(currentTime)) return;
 
-    if (currentTime + toleranceSec >= clipEnd) {
-      window.clearInterval(id);
-      handleTrackEnded(token, { forceStop: true }).catch((error) => {
-        console.warn(`${MODULE_ID} | clip end handling failed`, error);
-      });
-    }
+    const safeClipStart = Number.isFinite(current.clipStart) ? current.clipStart : clipStart;
+    const safeClipEnd = Number.isFinite(current.clipEnd) ? current.clipEnd : clipEnd;
+    if (!Number.isFinite(safeClipStart) || !Number.isFinite(safeClipEnd) || safeClipEnd <= safeClipStart) return;
+    const stopThresholdReached = (currentTime + toleranceSec) >= safeClipEnd;
+    if (!stopThresholdReached) return;
+
+    window.clearInterval(id);
+    handleTrackEnded(token, { forceStop: true }).catch((error) => {
+      console.warn(`${MODULE_ID} | clip end handling failed`, error);
+    });
   }, pollMs);
 
   return id;
 }
 
-function startAmbienceClipEndMonitor(sound, clipEnd, token) {
+function startAmbienceClipEndMonitor(sound, clipStart, clipEnd, token) {
   const pollMs = 120;
   const toleranceSec = 0.05;
   const id = window.setInterval(() => {
@@ -3789,14 +4353,18 @@ function startAmbienceClipEndMonitor(sound, clipEnd, token) {
       window.clearInterval(id);
       return;
     }
-    const currentTime = getSoundCurrentTime(sound);
+    const currentTime = getSoundCurrentTime(entry.sound ?? sound);
     if (!Number.isFinite(currentTime)) return;
-    if (currentTime + toleranceSec >= clipEnd) {
-      window.clearInterval(id);
-      handleAmbienceEnded(token, { forceStop: true }).catch((error) => {
-        console.warn(`${MODULE_ID} | ambience clip end failed`, error);
-      });
-    }
+    const safeClipStart = Number.isFinite(entry.clipStart) ? entry.clipStart : clipStart;
+    const safeClipEnd = Number.isFinite(entry.clipEnd) ? entry.clipEnd : clipEnd;
+    if (!Number.isFinite(safeClipStart) || !Number.isFinite(safeClipEnd) || safeClipEnd <= safeClipStart) return;
+    const stopThresholdReached = (currentTime + toleranceSec) >= safeClipEnd;
+    if (!stopThresholdReached) return;
+
+    window.clearInterval(id);
+    handleAmbienceEnded(token, { forceStop: true }).catch((error) => {
+      console.warn(`${MODULE_ID} | ambience clip end failed`, error);
+    });
   }, pollMs);
   return id;
 }
@@ -3816,10 +4384,6 @@ function clearAmbienceClipEndMonitor(state) {
 function getSoundCurrentTime(sound) {
   if (!sound) return null;
 
-  if (Number.isFinite(sound.currentTime)) {
-    return Number(sound.currentTime);
-  }
-
   if (sound.element && Number.isFinite(sound.element.currentTime)) {
     return Number(sound.element.currentTime);
   }
@@ -3828,12 +4392,60 @@ function getSoundCurrentTime(sound) {
     return Number(sound.sourceElement.currentTime);
   }
 
+  if (Number.isFinite(sound.currentTime)) {
+    return Number(sound.currentTime);
+  }
+
   if (typeof sound.seek === "function") {
     const sought = sound.seek();
     if (Number.isFinite(sought)) return Number(sought);
   }
 
   return null;
+}
+
+function seekSoundToTime(sound, timeSec) {
+  if (!sound) return false;
+  const target = Math.max(0, Number(timeSec) || 0);
+  let applied = false;
+
+  try {
+    if (sound.element && Number.isFinite(sound.element.currentTime)) {
+      sound.element.currentTime = target;
+      applied = true;
+    }
+  } catch (_error) {
+    // no-op
+  }
+
+  try {
+    if (sound.sourceElement && Number.isFinite(sound.sourceElement.currentTime)) {
+      sound.sourceElement.currentTime = target;
+      applied = true;
+    }
+  } catch (_error) {
+    // no-op
+  }
+
+  try {
+    if (Number.isFinite(sound.currentTime)) {
+      sound.currentTime = target;
+      applied = true;
+    }
+  } catch (_error) {
+    // no-op
+  }
+
+  try {
+    if (typeof sound.seek === "function") {
+      sound.seek(target);
+      applied = true;
+    }
+  } catch (_error) {
+    // no-op
+  }
+
+  return applied;
 }
 
 function getSoundDuration(sound) {
@@ -3875,7 +4487,9 @@ function getTrackProgressForSidebar(track) {
   const pausedMark = current.paused ? " (paused)" : "";
   if (Number.isFinite(clipEnd) && clipEnd > clipStart) {
     const clipDuration = clipEnd - clipStart;
-    const boundedNow = Math.clamp(insideClip, 0, clipDuration);
+    const boundedNow = current.loopEnabled
+      ? ((insideClip % clipDuration) + clipDuration) % clipDuration
+      : Math.clamp(insideClip, 0, clipDuration);
     const displayNow = Math.clamp(boundedNow / displayRate, 0, clipDuration / displayRate);
     const displayDuration = clipDuration / displayRate;
     return {
@@ -4013,49 +4627,3 @@ async function playSoundWithRetry(sound, playOptions) {
 function waitMs(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
-
-function setPlaylistClipWatcher(soundDoc, clipEnd) {
-  clearPlaylistClipWatcher(soundDoc);
-  if (!soundDoc?.playing || !soundDoc?.sound) return;
-  if (!Number.isFinite(clipEnd)) return;
-
-  const key = soundDoc.uuid ?? soundDoc.id;
-  const pollMs = 120;
-  const toleranceSec = 0.05;
-
-  const id = window.setInterval(async () => {
-    const liveSound = soundDoc.sound;
-    if (!soundDoc.playing || !liveSound) {
-      clearPlaylistClipWatcher(soundDoc);
-      return;
-    }
-
-    const currentTime = getSoundCurrentTime(liveSound);
-    if (!Number.isFinite(currentTime)) return;
-
-    if (currentTime + toleranceSec >= clipEnd) {
-      clearPlaylistClipWatcher(soundDoc);
-      try {
-        await soundDoc.update({ playing: false });
-      } catch (_error) {
-        try {
-          await liveSound.stop();
-        } catch (__error) {
-          // no-op
-        }
-      }
-    }
-  }, pollMs);
-
-  playlistClipWatchers.set(key, id);
-}
-
-function clearPlaylistClipWatcher(soundDoc) {
-  if (!soundDoc) return;
-  const key = soundDoc.uuid ?? soundDoc.id;
-  const id = playlistClipWatchers.get(key);
-  if (!id) return;
-  window.clearInterval(id);
-  playlistClipWatchers.delete(key);
-}
-
