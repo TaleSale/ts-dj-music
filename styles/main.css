@@ -797,6 +797,93 @@
   opacity: 0.8;
 }
 
+.ts-dj-transfer-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ts-dj-transfer-dialog__lead {
+  margin: 0;
+  line-height: 1.45;
+  color: var(--color-text-dark-secondary);
+}
+
+.ts-dj-transfer-dialog__section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--color-border-light-2) 85%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-bg-option) 70%, transparent);
+}
+
+.ts-dj-transfer-dialog__section--muted {
+  background: color-mix(in srgb, var(--color-bg-option) 40%, transparent);
+}
+
+.ts-dj-transfer-dialog__title-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ts-dj-transfer-dialog__title-row h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.ts-dj-transfer-dialog__title-row span {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--color-text-dark-secondary);
+}
+
+.ts-dj-transfer-dialog__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ts-dj-transfer-dialog__field > label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--color-text-dark-primary);
+}
+
+.ts-dj-transfer-dialog__control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ts-dj-transfer-dialog__control--stacked {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.ts-dj-transfer-dialog__control--stacked > button {
+  align-self: flex-start;
+}
+
+.ts-dj-transfer-dialog__control--stacked > input[type="text"] {
+  flex: 1 1 auto;
+  width: 100%;
+}
+
+.ts-dj-transfer-dialog__control > input[type="text"],
+.ts-dj-transfer-dialog__control > input[type="file"] {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ts-dj-transfer-dialog__control > button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 @media (max-width: 980px) {
   .ts-dj-grid-music,
   .ts-dj-grid-ambience {
@@ -814,5 +901,10 @@
 
   .ts-dj-status {
     justify-content: space-between;
+  }
+
+  .ts-dj-transfer-dialog__control {
+    flex-direction: column;
+    align-items: stretch;
   }
 }

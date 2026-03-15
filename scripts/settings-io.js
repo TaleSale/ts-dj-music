@@ -247,31 +247,65 @@ function toImportShape(payload) {
   };
 }
 
+function ensureJsonFileName(fileName, fallbackName = `${MODULE_ID}-settings.json`) {
+  const normalized = asString(fileName, fallbackName);
+  return normalized.toLowerCase().endsWith(".json") ? normalized : `${normalized}.json`;
+}
+
 async function promptExportTarget(defaultName) {
   return new Promise((resolve) => {
     new Dialog({
       title: "TS-DJ-MUSIC | Export settings",
       content: `
-        <p>Choose folder and file name for exported settings.</p>
-        <div style="display:grid; gap:8px;">
-          <div style="display:flex; gap:8px; align-items:center;">
-            <label style="min-width:64px;">Folder</label>
-            <input type="text" id="ts-dj-export-folder" style="flex:1;" value="worlds">
-            <button type="button" id="ts-dj-export-folder-browse">Browse</button>
-          </div>
-          <div style="display:flex; gap:8px; align-items:center;">
-            <label style="min-width:64px;">File</label>
-            <input type="text" id="ts-dj-export-file" style="flex:1;" value="${foundry.utils.escapeHTML(defaultName)}">
-          </div>
+        <div class="ts-dj-transfer-dialog">
+          <p class="ts-dj-transfer-dialog__lead">Choose where to export the settings JSON.</p>
+          <section class="ts-dj-transfer-dialog__section">
+            <div class="ts-dj-transfer-dialog__title-row">
+              <h3>Foundry Data</h3>
+              <span>Save into a folder accessible from the world.</span>
+            </div>
+            <div class="ts-dj-transfer-dialog__field">
+              <label for="ts-dj-export-folder">Folder</label>
+              <div class="ts-dj-transfer-dialog__control ts-dj-transfer-dialog__control--stacked">
+                <button type="button" id="ts-dj-export-folder-browse">Browse</button>
+                <input type="text" id="ts-dj-export-folder" value="worlds">
+              </div>
+            </div>
+          </section>
+          <section class="ts-dj-transfer-dialog__section">
+            <div class="ts-dj-transfer-dialog__title-row">
+              <h3>File</h3>
+              <span>The same file name is used for both export options.</span>
+            </div>
+            <div class="ts-dj-transfer-dialog__field">
+              <label for="ts-dj-export-file">File name</label>
+              <div class="ts-dj-transfer-dialog__control">
+                <input type="text" id="ts-dj-export-file" value="${foundry.utils.escapeHTML(defaultName)}">
+              </div>
+            </div>
+          </section>
+          <section class="ts-dj-transfer-dialog__section ts-dj-transfer-dialog__section--muted">
+            <div class="ts-dj-transfer-dialog__title-row">
+              <h3>Computer</h3>
+              <span>Use Download to save the JSON directly to your device.</span>
+            </div>
+          </section>
         </div>
       `,
       buttons: {
-        save: {
-          label: "Save",
+        saveToData: {
+          label: "Export to Foundry Data",
           callback: (html) => {
             const folder = normalizePath(html.find("#ts-dj-export-folder").val());
-            const file = asString(html.find("#ts-dj-export-file").val(), defaultName);
-            resolve({ folder, file });
+            const file = ensureJsonFileName(html.find("#ts-dj-export-file").val(), defaultName);
+            resolve({ mode: "data", folder, file });
+          },
+        },
+        saveToComputer: {
+          label: "Export to Computer",
+          callback: (html) => {
+            const file = ensureJsonFileName(html.find("#ts-dj-export-file").val(), defaultName);
+            resolve({ mode: "download", file });
           },
         },
         cancel: {
@@ -279,7 +313,7 @@ async function promptExportTarget(defaultName) {
           callback: () => resolve(null),
         },
       },
-      default: "save",
+      default: "saveToData",
       render: (html) => {
         html.find("#ts-dj-export-folder-browse").on("click", () => {
           new FilePicker({
@@ -291,15 +325,13 @@ async function promptExportTarget(defaultName) {
           }).render(true);
         });
       },
-    }).render(true);
+    }, { width: 560 }).render(true);
   });
 }
 
 async function uploadJsonToDataFolder(payload, folderPath, fileName) {
   const normalizedFolder = normalizePath(folderPath);
-  const normalizedFileName = asString(fileName, `${MODULE_ID}-settings.json`).toLowerCase().endsWith(".json")
-    ? asString(fileName, `${MODULE_ID}-settings.json`)
-    : `${asString(fileName, `${MODULE_ID}-settings`)}.json`;
+  const normalizedFileName = ensureJsonFileName(fileName, `${MODULE_ID}-settings.json`);
 
   if (!normalizedFolder) {
     throw new Error("Folder path is required.");
@@ -311,6 +343,13 @@ async function uploadJsonToDataFolder(payload, folderPath, fileName) {
   const response = await FilePicker.upload("data", normalizedFolder, file, {}, { notify: false });
   const savedPath = normalizePath(response?.path ?? joinPath(normalizedFolder, normalizedFileName));
   return savedPath;
+}
+
+async function downloadJsonToComputer(payload, fileName) {
+  const normalizedFileName = ensureJsonFileName(fileName, `${MODULE_ID}-settings.json`);
+  const json = JSON.stringify(payload, null, 2);
+  foundry.utils.saveDataToFile(json, "text/json", normalizedFileName);
+  return normalizedFileName;
 }
 
 async function promptImportPath(initialValue = "") {
@@ -340,6 +379,87 @@ async function promptImportPath(initialValue = "") {
   });
 }
 
+async function promptImportSource(initialValue = "") {
+  return new Promise((resolve) => {
+    new Dialog({
+      title: "TS-DJ-MUSIC | Import settings",
+      content: `
+        <div class="ts-dj-transfer-dialog">
+          <p class="ts-dj-transfer-dialog__lead">Choose where to load the settings JSON from.</p>
+          <section class="ts-dj-transfer-dialog__section">
+            <div class="ts-dj-transfer-dialog__title-row">
+              <h3>Foundry Data</h3>
+              <span>Select an existing JSON file from the data directory.</span>
+            </div>
+            <div class="ts-dj-transfer-dialog__field">
+              <label for="ts-dj-import-path">JSON file</label>
+              <div class="ts-dj-transfer-dialog__control ts-dj-transfer-dialog__control--stacked">
+                <button type="button" id="ts-dj-import-path-browse">Browse</button>
+                <input type="text" id="ts-dj-import-path" value="${foundry.utils.escapeHTML(initialValue)}" placeholder="worlds/.../ts-dj-music-settings.json">
+              </div>
+            </div>
+          </section>
+          <section class="ts-dj-transfer-dialog__section">
+            <div class="ts-dj-transfer-dialog__title-row">
+              <h3>Computer</h3>
+              <span>Choose a local JSON file from your device.</span>
+            </div>
+            <div class="ts-dj-transfer-dialog__field">
+              <label for="ts-dj-import-file">Local file</label>
+              <div class="ts-dj-transfer-dialog__control">
+                <input type="file" id="ts-dj-import-file" accept=".json,application/json">
+              </div>
+            </div>
+          </section>
+        </div>
+      `,
+      buttons: {
+        importFromData: {
+          label: "Import from Foundry Data",
+          callback: (html) => {
+            const path = normalizePath(html.find("#ts-dj-import-path").val());
+            resolve(path ? { mode: "data", path } : null);
+          },
+        },
+        importFromComputer: {
+          label: "Import from Computer",
+          callback: (html) => {
+            const input = html.find("#ts-dj-import-file")[0];
+            const file = input?.files?.[0] ?? null;
+            resolve(file ? { mode: "file", file } : null);
+          },
+        },
+        cancel: {
+          label: "Cancel",
+          callback: () => resolve(null),
+        },
+      },
+      default: "importFromData",
+      render: (html) => {
+        const updateImportButtons = () => {
+          const hasPath = Boolean(normalizePath(html.find("#ts-dj-import-path").val()));
+          const hasLocalFile = Boolean(html.find("#ts-dj-import-file")[0]?.files?.length);
+
+          html.find("[data-button='importFromData']").prop("disabled", !hasPath);
+          html.find("[data-button='importFromComputer']").prop("disabled", !hasLocalFile);
+        };
+
+        html.find("#ts-dj-import-path-browse").on("click", async () => {
+          const picked = await promptImportPath(html.find("#ts-dj-import-path").val());
+          if (picked) {
+            html.find("#ts-dj-import-path").val(picked);
+          }
+          updateImportButtons();
+        });
+
+        html.find("#ts-dj-import-path").on("input change", updateImportButtons);
+        html.find("#ts-dj-import-file").on("change", updateImportButtons);
+        updateImportButtons();
+      },
+    }, { width: 560 }).render(true);
+  });
+}
+
 async function fetchJsonFromFoundryPath(filePath) {
   const normalizedPath = normalizePath(filePath);
   if (!normalizedPath) throw new Error("Path is empty.");
@@ -358,6 +478,15 @@ async function fetchJsonFromFoundryPath(filePath) {
   }
 
   throw lastError ?? new Error("Failed to load JSON file.");
+}
+
+async function readJsonFromLocalFile(file) {
+  if (!(file instanceof File)) {
+    throw new Error("File is required.");
+  }
+
+  const text = await file.text();
+  return JSON.parse(text);
 }
 
 async function promptFolderPath(_message, initialValue = "") {
@@ -673,8 +802,13 @@ export async function exportModuleSettings() {
   if (!target) return false;
 
   try {
-    const savedPath = await uploadJsonToDataFolder(payload, target.folder, target.file);
-    ui.notifications.info(`TS-DJ-MUSIC: settings exported to ${savedPath}.`);
+    if (target.mode === "download") {
+      const savedFile = await downloadJsonToComputer(payload, target.file);
+      ui.notifications.info(`TS-DJ-MUSIC: settings exported to ${savedFile}.`);
+    } else {
+      const savedPath = await uploadJsonToDataFolder(payload, target.folder, target.file);
+      ui.notifications.info(`TS-DJ-MUSIC: settings exported to ${savedPath}.`);
+    }
   } catch (error) {
     console.warn(`${MODULE_ID} | export failed`, error);
     ui.notifications.error("TS-DJ-MUSIC: export failed.");
@@ -696,17 +830,23 @@ export async function importModuleSettings() {
   importInProgress = true;
 
   try {
-    const filePath = await promptImportPath();
-    if (!filePath) {
+    const source = await promptImportSource();
+    if (!source) {
       return { applied: false, cancelled: true };
     }
 
     let payload;
     try {
-      payload = await fetchJsonFromFoundryPath(filePath);
+      if (source.mode === "file") {
+        payload = await readJsonFromLocalFile(source.file);
+      } else {
+        payload = await fetchJsonFromFoundryPath(source.path);
+      }
     } catch (error) {
       console.warn(`${MODULE_ID} | import read failed`, error);
-      ui.notifications.error("TS-DJ-MUSIC: failed to load JSON from Foundry Data.");
+      ui.notifications.error(source.mode === "file"
+        ? "TS-DJ-MUSIC: failed to load JSON from your computer."
+        : "TS-DJ-MUSIC: failed to load JSON from Foundry Data.");
       return { applied: false, cancelled: false };
     }
 
