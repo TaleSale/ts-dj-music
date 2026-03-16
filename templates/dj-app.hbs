@@ -2,45 +2,49 @@
   <section class="ts-dj-toolbar">
     <div class="ts-dj-live-rate">
       <div class="ts-dj-live-control-row">
-        <label>Speed (live)</label>
+        <label>{{localize "TS_DJ_MUSIC.App.LiveSpeed"}}</label>
         <input type="range" min="0.5" max="2" step="0.25" value="{{liveRate}}" data-action="set-live-rate">
         <span class="ts-dj-live-rate-value ts-dj-live-control-value">{{liveRateLabel}}</span>
       </div>
       <div class="ts-dj-live-control-row">
-        <label>Music Volume</label>
+        <label>{{localize "TS_DJ_MUSIC.App.LiveMusicVolume"}}</label>
         <input type="range" min="0" max="1" step="0.05" value="{{liveMusicVolume}}" data-action="set-live-music-volume">
         <span class="ts-dj-live-music-volume-value ts-dj-live-control-value">{{liveMusicVolumeLabel}}</span>
       </div>
       <div class="ts-dj-live-control-row">
-        <label>Ambience Volume</label>
+        <label>{{localize "TS_DJ_MUSIC.App.LiveAmbienceVolume"}}</label>
         <input type="range" min="0" max="1" step="0.05" value="{{liveAmbienceVolume}}" data-action="set-live-ambience-volume">
         <span class="ts-dj-live-ambience-volume-value ts-dj-live-control-value">{{liveAmbienceVolumeLabel}}</span>
       </div>
       <label class="ts-dj-ambience-toggle">
         <input type="checkbox" data-action="set-ambience-concurrency" {{#if ambienceAllowConcurrent}}checked{{/if}}>
-        Allow multiple Ambience
+        {{localize "TS_DJ_MUSIC.App.AllowMultipleAmbience"}}
       </label>
     </div>
     <div class="ts-dj-status">
       <div class="ts-dj-settings-actions">
-        <button type="button" data-action="export-settings"><i class="fas fa-file-export"></i> Export</button>
-        <button type="button" data-action="import-settings"><i class="fas fa-file-import"></i> Import</button>
+        <button type="button" class="ts-dj-icon-button" data-action="reset-module-settings" title="{{localize "TS_DJ_MUSIC.Dialogs.ResetSettingsTitle"}}" aria-label="{{localize "TS_DJ_MUSIC.Dialogs.ResetSettingsTitle"}}"><i class="fas fa-trash"></i></button>
+        <button type="button" data-action="export-settings"><i class="fas fa-file-export"></i> {{localize "TS_DJ_MUSIC.Common.Export"}}</button>
+        <button type="button" data-action="import-settings"><i class="fas fa-file-import"></i> {{localize "TS_DJ_MUSIC.Common.Import"}}</button>
       </div>
       <span>{{currentLabel}}</span>
       {{#if isPlaying}}
-      <button type="button" data-action="stop"><i class="fas fa-stop"></i> Stop</button>
+      <button type="button" class="ts-dj-icon-button" data-action="stop" title="{{localize "TS_DJ_MUSIC.Common.Stop"}}" aria-label="{{localize "TS_DJ_MUSIC.Common.Stop"}}"><i class="fas fa-stop"></i></button>
       {{/if}}
     </div>
   </section>
 
   <section class="ts-dj-sections">
-    <details class="ts-dj-section" open>
-      <summary>Files</summary>
+    <details class="ts-dj-section" data-section="files" {{#if managerSections.files}}open{{/if}}>
+      <summary>{{localize "TS_DJ_MUSIC.Common.Files"}}</summary>
       <div class="ts-dj-section-body">
         <article class="ts-dj-card" data-card="files">
-          <header>
-            <h3>Files</h3>
-            <button type="button" data-action="create-file"><i class="fas fa-plus"></i> New</button>
+          <header class="ts-dj-card-static-header">
+            <span class="ts-dj-card-summary-label">{{localize "TS_DJ_MUSIC.Common.Files"}}</span>
+            <div class="ts-dj-card-actions">
+              <button type="button" data-action="create-file"><i class="fas fa-plus"></i> {{localize "TS_DJ_MUSIC.Common.New"}}</button>
+              <button type="button" class="ts-dj-icon-button" data-action="delete-files-block" title="{{localize "TS_DJ_MUSIC.Dialogs.DeleteAllFilesTitle"}}" aria-label="{{localize "TS_DJ_MUSIC.Dialogs.DeleteAllFilesTitle"}}"><i class="fas fa-trash"></i></button>
+            </div>
           </header>
           <div class="ts-dj-list">
             {{#if hasFiles}}
@@ -48,147 +52,222 @@
               <div class="ts-dj-row">
                 <div class="ts-dj-row-main">
                   <strong>{{name}}</strong>
-                  <div class="meta">{{path}}</div>
+                  <div class="meta">{{localize "TS_DJ_MUSIC.Common.Path"}}: {{path}}</div>
                 </div>
                 <div class="ts-dj-actions">
-                  <button type="button" data-action="edit-file" data-id="{{id}}"><i class="fas fa-pen"></i></button>
-                  <button type="button" data-action="delete-file" data-id="{{id}}"><i class="fas fa-trash"></i></button>
+                  <button type="button" data-action="edit-file" data-id="{{id}}" title="{{localize "TS_DJ_MUSIC.Common.Edit"}}" aria-label="{{localize "TS_DJ_MUSIC.Common.Edit"}}"><i class="fas fa-pen"></i></button>
+                  <button type="button" data-action="delete-file" data-id="{{id}}" title="{{localize "TS_DJ_MUSIC.Common.Delete"}}" aria-label="{{localize "TS_DJ_MUSIC.Common.Delete"}}"><i class="fas fa-trash"></i></button>
                 </div>
               </div>
               {{/each}}
             {{else}}
-              <p class="notes">No files yet.</p>
+              <p class="notes">{{localize "TS_DJ_MUSIC.Notes.NoFilesYet"}}</p>
             {{/if}}
           </div>
         </article>
       </div>
     </details>
 
-    <details class="ts-dj-section" open>
-      <summary>Music</summary>
+    <details class="ts-dj-section" data-section="music" {{#if managerSections.music}}open{{/if}}>
+      <summary>{{localize "TS_DJ_MUSIC.Common.Music"}}</summary>
       <div class="ts-dj-section-body">
         <div class="ts-dj-grid ts-dj-grid-music">
-          <article class="ts-dj-card" data-card="music-playlists">
-            <header>
-              <h3>Playlists</h3>
-              <button type="button" data-action="create-playlist"><i class="fas fa-plus"></i> New</button>
-            </header>
-            <div class="ts-dj-list">
-              {{#if hasPlaylists}}
-                {{#each playlists}}
-                <div class="ts-dj-row {{#if active}}is-active{{/if}}" data-playlist-id="{{id}}">
-                  <div class="ts-dj-row-main">
-                    <strong>{{name}}</strong>
-                    <div class="meta">Tracks: {{trackCount}} | Loop: {{#if loop}}Yes{{else}}No{{/if}} | Shuffle: {{#if shuffle}}Yes{{else}}No{{/if}}</div>
-                    <div class="meta">{{trackNames}}</div>
-                  </div>
-                  <div class="ts-dj-actions">
-                    <button type="button" class="ts-dj-play-toggle" data-action="{{playAction}}" data-id="{{id}}"><i class="fas {{playIcon}}"></i></button>
-                    <button type="button" data-action="toggle-playlist-loop" data-id="{{id}}" class="loop {{#if loop}}is-on{{/if}}" title="Loop"><i class="fas fa-repeat"></i></button>
-                    <button type="button" data-action="toggle-playlist-shuffle" data-id="{{id}}" class="shuffle {{#if shuffle}}is-on{{/if}}" title="Shuffle"><i class="fas fa-random"></i></button>
-                    <button type="button" data-action="edit-playlist" data-id="{{id}}"><i class="fas fa-pen"></i></button>
-                    <button type="button" data-action="delete-playlist" data-id="{{id}}"><i class="fas fa-trash"></i></button>
-                  </div>
-                </div>
-                {{/each}}
-              {{else}}
-                <p class="notes">No playlists yet.</p>
-              {{/if}}
+          <details class="ts-dj-card ts-dj-card-collapse" data-card="music-playlists" data-card-key="musicPlaylists" {{#if managerCards.musicPlaylists.expanded}}open{{/if}}>
+            <summary>
+              <span class="ts-dj-card-summary-label">{{localize "TS_DJ_MUSIC.Common.Playlists"}}</span>
+            </summary>
+            <div class="ts-dj-card-actions">
+              <button type="button" data-action="create-playlist"><i class="fas fa-plus"></i> {{localize "TS_DJ_MUSIC.Common.New"}}</button>
+              <button type="button" class="ts-dj-icon-button" data-action="delete-playlists-block" title="{{localize "TS_DJ_MUSIC.Dialogs.DeleteAllPlaylistsTitle"}}" aria-label="{{localize "TS_DJ_MUSIC.Dialogs.DeleteAllPlaylistsTitle"}}"><i class="fas fa-trash"></i></button>
             </div>
-          </article>
-
-          <article class="ts-dj-card" data-card="music-tracks">
-            <header>
-              <h3>Music</h3>
-              <button type="button" data-action="create-track"><i class="fas fa-plus"></i> New</button>
-            </header>
-            <div class="ts-dj-list">
-              {{#if hasTracks}}
-                {{#each tracks}}
-                <div class="ts-dj-row {{#if active}}is-active{{/if}}" data-track-id="{{id}}">
-                  <div class="ts-dj-row-main">
-                    <strong>{{name}}</strong>
-                    <div class="meta">File: {{fileName}}</div>
-                    <div class="meta">Clip: {{startLabel}} - {{endLabel}} | Speed: {{rateLabel}} | Loop: {{#if loop}}Yes{{else}}No{{/if}}</div>
-                  </div>
-                  <div class="ts-dj-actions">
-                    <button type="button" class="ts-dj-play-toggle" data-action="{{playAction}}" data-id="{{id}}"><i class="fas {{playIcon}}"></i></button>
-                    <button type="button" data-action="toggle-track-loop" data-id="{{id}}" class="loop {{#if loop}}is-on{{/if}}" title="Loop"><i class="fas fa-repeat"></i></button>
-                    <button type="button" data-action="edit-track" data-id="{{id}}"><i class="fas fa-pen"></i></button>
-                    <button type="button" data-action="delete-track" data-id="{{id}}"><i class="fas fa-trash"></i></button>
-                  </div>
+            <div class="ts-dj-card-content">
+              <div class="ts-dj-card-content-inner">
+                <div class="ts-dj-list">
+                  {{#if hasPlaylists}}
+                    {{#each playlists}}
+                    <div class="ts-dj-manager-playlist" data-playlist-id="{{id}}">
+                      <div class="ts-dj-music-sidebar-playlist">
+                        <div class="ts-dj-music-sidebar-row {{#if active}}is-active{{/if}}">
+                          <div class="row-actions">
+                            <button type="button" data-action="{{playAction}}" data-id="{{id}}" class="play"><i class="fas {{playIcon}}"></i></button>
+                            <button type="button" data-action="toggle-playlist-loop" data-id="{{id}}" class="loop {{#if loop}}is-on{{/if}}" title="{{localize "TS_DJ_MUSIC.Common.Loop"}}"><i class="fas fa-repeat"></i></button>
+                            <button type="button" data-action="toggle-playlist-shuffle" data-id="{{id}}" class="shuffle {{#if shuffle}}is-on{{/if}}" title="{{localize "TS_DJ_MUSIC.Common.Shuffle"}}"><i class="fas fa-random"></i></button>
+                            <button type="button" data-action="edit-playlist" data-id="{{id}}" class="edit" title="{{localize "TS_DJ_MUSIC.Common.Edit"}}"><i class="fas fa-pen"></i></button>
+                            <button type="button" data-action="delete-playlist" data-id="{{id}}" class="delete" title="{{localize "TS_DJ_MUSIC.Common.Delete"}}"><i class="fas fa-trash"></i></button>
+                            <button type="button" data-action="{{expandAction}}" data-id="{{id}}" class="expand {{#if expanded}}is-on{{/if}}" title="{{expandTitle}}"><i class="fas {{expandIcon}}"></i></button>
+                          </div>
+                          <div class="meta">
+                            <strong>{{name}}</strong>
+                            <span>{{trackCount}} {{localize "TS_DJ_MUSIC.Common.TracksLower"}} | {{localize "TS_DJ_MUSIC.Common.LoopLower"}}: {{#if loop}}{{localize "TS_DJ_MUSIC.Common.Yes"}}{{else}}{{localize "TS_DJ_MUSIC.Common.No"}}{{/if}} | {{localize "TS_DJ_MUSIC.Common.ShuffleLower"}}: {{#if shuffle}}{{localize "TS_DJ_MUSIC.Common.Yes"}}{{else}}{{localize "TS_DJ_MUSIC.Common.No"}}{{/if}}</span>
+                          </div>
+                        </div>
+                        <div class="ts-dj-music-sidebar-sublist {{#if expanded}}is-open{{/if}}" data-manager-playlist-track-list data-playlist-kind="music" data-playlist-id="{{id}}">
+                          {{#each trackEntries}}
+                          <div class="ts-dj-music-sidebar-subrow {{#if active}}is-active{{/if}}" data-manager-playlist-track-row data-playlist-kind="music" data-playlist-id="{{playlistId}}" data-track-id="{{id}}" draggable="true" title="{{localize "TS_DJ_MUSIC.Common.DragToReorder"}}">
+                            <button
+                              type="button"
+                              data-action="{{playAction}}"
+                              data-id="{{id}}"
+                              data-playlist-id="{{playlistId}}"
+                              data-track-id="{{id}}"
+                              class="play-from-track"
+                              title="{{localize "TS_DJ_MUSIC.Common.PlayFromTrack"}}"
+                            ><i class="fas {{playIcon}}"></i></button>
+                            <span class="index">{{index}}.</span>
+                            <span class="track-name">{{name}}</span>
+                          </div>
+                          {{/each}}
+                          {{#unless trackEntries.length}}
+                          <div class="ts-dj-music-sidebar-subrow is-empty">{{localize "TS_DJ_MUSIC.Notes.NoTracksAvailable"}}</div>
+                          {{/unless}}
+                        </div>
+                      </div>
+                    </div>
+                    {{/each}}
+                  {{else}}
+                    <p class="notes">{{localize "TS_DJ_MUSIC.Notes.NoPlaylistsYet"}}</p>
+                  {{/if}}
                 </div>
-                {{/each}}
-              {{else}}
-                <p class="notes">No tracks yet.</p>
-              {{/if}}
+              </div>
             </div>
-          </article>
+          </details>
 
+          <details class="ts-dj-card ts-dj-card-collapse" data-card="music-tracks" data-card-key="musicTracks" {{#if managerCards.musicTracks.expanded}}open{{/if}}>
+            <summary>
+              <span class="ts-dj-card-summary-label">{{localize "TS_DJ_MUSIC.Common.Music"}}</span>
+            </summary>
+            <div class="ts-dj-card-actions">
+              <button type="button" data-action="create-track"><i class="fas fa-plus"></i> {{localize "TS_DJ_MUSIC.Common.New"}}</button>
+              <button type="button" class="ts-dj-icon-button" data-action="delete-tracks-block" title="{{localize "TS_DJ_MUSIC.Dialogs.DeleteAllMusicTitle"}}" aria-label="{{localize "TS_DJ_MUSIC.Dialogs.DeleteAllMusicTitle"}}"><i class="fas fa-trash"></i></button>
+            </div>
+            <div class="ts-dj-card-content">
+              <div class="ts-dj-card-content-inner">
+                <div class="ts-dj-list">
+                  {{#if hasTracks}}
+                    {{#each tracks}}
+                    <div class="ts-dj-row {{#if active}}is-active{{/if}}" data-track-id="{{id}}">
+                      <div class="ts-dj-row-main">
+                        <strong>{{name}}</strong>
+                        <div class="meta">{{localize "TS_DJ_MUSIC.Common.File"}}: {{fileName}}</div>
+                        <div class="meta">{{localize "TS_DJ_MUSIC.Common.Clip"}}: {{startLabel}} - {{endLabel}} | {{localize "TS_DJ_MUSIC.Common.Speed"}}: {{rateLabel}} | {{localize "TS_DJ_MUSIC.Common.Loop"}}: {{#if loop}}{{localize "TS_DJ_MUSIC.Common.Yes"}}{{else}}{{localize "TS_DJ_MUSIC.Common.No"}}{{/if}}</div>
+                      </div>
+                      <div class="ts-dj-actions">
+                        <button type="button" class="ts-dj-play-toggle" data-action="{{playAction}}" data-id="{{id}}"><i class="fas {{playIcon}}"></i></button>
+                        <button type="button" data-action="toggle-track-loop" data-id="{{id}}" class="loop {{#if loop}}is-on{{/if}}" title="{{localize "TS_DJ_MUSIC.Common.Loop"}}"><i class="fas fa-repeat"></i></button>
+                        <button type="button" data-action="edit-track" data-id="{{id}}" title="{{localize "TS_DJ_MUSIC.Common.Edit"}}" aria-label="{{localize "TS_DJ_MUSIC.Common.Edit"}}"><i class="fas fa-pen"></i></button>
+                        <button type="button" data-action="delete-track" data-id="{{id}}" title="{{localize "TS_DJ_MUSIC.Common.Delete"}}" aria-label="{{localize "TS_DJ_MUSIC.Common.Delete"}}"><i class="fas fa-trash"></i></button>
+                      </div>
+                    </div>
+                    {{/each}}
+                  {{else}}
+                    <p class="notes">{{localize "TS_DJ_MUSIC.Notes.NoTracksYet"}}</p>
+                  {{/if}}
+                </div>
+              </div>
+            </div>
+          </details>
         </div>
       </div>
     </details>
 
-    <details class="ts-dj-section" open>
-      <summary>Ambience</summary>
+    <details class="ts-dj-section" data-section="ambience" {{#if managerSections.ambience}}open{{/if}}>
+      <summary>{{localize "TS_DJ_MUSIC.Common.Ambience"}}</summary>
       <div class="ts-dj-section-body">
         <div class="ts-dj-grid ts-dj-grid-ambience">
-          <article class="ts-dj-card" data-card="ambience-playlists">
-            <header>
-              <h3>Ambience Playlists</h3>
-              <button type="button" data-action="create-ambience-playlist"><i class="fas fa-plus"></i> New</button>
-            </header>
-            <div class="ts-dj-list">
-              {{#if hasAmbiencePlaylists}}
-                {{#each ambiencePlaylists}}
-                <div class="ts-dj-row {{#if active}}is-active{{/if}}" data-ambience-playlist-id="{{id}}">
-                  <div class="ts-dj-row-main">
-                    <strong>{{name}}</strong>
-                    <div class="meta">Tracks: {{trackCount}} | Loop: {{#if loop}}Yes{{else}}No{{/if}} | Shuffle: {{#if shuffle}}Yes{{else}}No{{/if}}</div>
-                    <div class="meta">{{trackNames}}</div>
-                  </div>
-                  <div class="ts-dj-actions">
-                    <button type="button" class="ts-dj-play-toggle" data-action="{{playAction}}" data-id="{{id}}"><i class="fas {{playIcon}}"></i></button>
-                    <button type="button" data-action="toggle-ambience-playlist-loop" data-id="{{id}}" class="loop {{#if loop}}is-on{{/if}}" title="Loop"><i class="fas fa-repeat"></i></button>
-                    <button type="button" data-action="toggle-ambience-playlist-shuffle" data-id="{{id}}" class="shuffle {{#if shuffle}}is-on{{/if}}" title="Shuffle"><i class="fas fa-random"></i></button>
-                    <button type="button" data-action="edit-ambience-playlist" data-id="{{id}}"><i class="fas fa-pen"></i></button>
-                    <button type="button" data-action="delete-ambience-playlist" data-id="{{id}}"><i class="fas fa-trash"></i></button>
-                  </div>
-                </div>
-                {{/each}}
-              {{else}}
-                <p class="notes">No ambience playlists yet.</p>
-              {{/if}}
+          <details class="ts-dj-card ts-dj-card-collapse" data-card="ambience-playlists" data-card-key="ambiencePlaylists" {{#if managerCards.ambiencePlaylists.expanded}}open{{/if}}>
+            <summary>
+              <span class="ts-dj-card-summary-label">{{localize "TS_DJ_MUSIC.Common.AmbiencePlaylists"}}</span>
+            </summary>
+            <div class="ts-dj-card-actions">
+              <button type="button" data-action="create-ambience-playlist"><i class="fas fa-plus"></i> {{localize "TS_DJ_MUSIC.Common.New"}}</button>
+              <button type="button" class="ts-dj-icon-button" data-action="delete-ambience-playlists-block" title="{{localize "TS_DJ_MUSIC.Dialogs.DeleteAllAmbiencePlaylistsTitle"}}" aria-label="{{localize "TS_DJ_MUSIC.Dialogs.DeleteAllAmbiencePlaylistsTitle"}}"><i class="fas fa-trash"></i></button>
             </div>
-          </article>
+            <div class="ts-dj-card-content">
+              <div class="ts-dj-card-content-inner">
+                <div class="ts-dj-list">
+                  {{#if hasAmbiencePlaylists}}
+                    {{#each ambiencePlaylists}}
+                    <div class="ts-dj-manager-playlist" data-ambience-playlist-id="{{id}}">
+                      <div class="ts-dj-music-sidebar-playlist">
+                        <div class="ts-dj-music-sidebar-row {{#if active}}is-active{{/if}}">
+                          <div class="row-actions">
+                            <button type="button" data-action="{{playAction}}" data-id="{{id}}" class="play"><i class="fas {{playIcon}}"></i></button>
+                            <button type="button" data-action="toggle-ambience-playlist-loop" data-id="{{id}}" class="loop {{#if loop}}is-on{{/if}}" title="{{localize "TS_DJ_MUSIC.Common.Loop"}}"><i class="fas fa-repeat"></i></button>
+                            <button type="button" data-action="toggle-ambience-playlist-shuffle" data-id="{{id}}" class="shuffle {{#if shuffle}}is-on{{/if}}" title="{{localize "TS_DJ_MUSIC.Common.Shuffle"}}"><i class="fas fa-random"></i></button>
+                            <button type="button" data-action="edit-ambience-playlist" data-id="{{id}}" class="edit" title="{{localize "TS_DJ_MUSIC.Common.Edit"}}"><i class="fas fa-pen"></i></button>
+                            <button type="button" data-action="delete-ambience-playlist" data-id="{{id}}" class="delete" title="{{localize "TS_DJ_MUSIC.Common.Delete"}}"><i class="fas fa-trash"></i></button>
+                            <button type="button" data-action="{{expandAction}}" data-id="{{id}}" class="expand {{#if expanded}}is-on{{/if}}" title="{{expandTitle}}"><i class="fas {{expandIcon}}"></i></button>
+                          </div>
+                          <div class="meta">
+                            <strong>{{name}}</strong>
+                            <span>{{trackCount}} {{localize "TS_DJ_MUSIC.Common.TracksLower"}} | {{localize "TS_DJ_MUSIC.Common.LoopLower"}}: {{#if loop}}{{localize "TS_DJ_MUSIC.Common.Yes"}}{{else}}{{localize "TS_DJ_MUSIC.Common.No"}}{{/if}} | {{localize "TS_DJ_MUSIC.Common.ShuffleLower"}}: {{#if shuffle}}{{localize "TS_DJ_MUSIC.Common.Yes"}}{{else}}{{localize "TS_DJ_MUSIC.Common.No"}}{{/if}}</span>
+                          </div>
+                        </div>
+                        <div class="ts-dj-music-sidebar-sublist {{#if expanded}}is-open{{/if}}" data-manager-playlist-track-list data-playlist-kind="ambience" data-playlist-id="{{id}}">
+                          {{#each trackEntries}}
+                          <div class="ts-dj-music-sidebar-subrow {{#if active}}is-active{{/if}}" data-manager-playlist-track-row data-playlist-kind="ambience" data-playlist-id="{{playlistId}}" data-track-id="{{id}}" draggable="true" title="{{localize "TS_DJ_MUSIC.Common.DragToReorder"}}">
+                            <button
+                              type="button"
+                              data-action="{{playAction}}"
+                              data-id="{{id}}"
+                              data-playlist-id="{{playlistId}}"
+                              data-track-id="{{id}}"
+                              class="play-from-track"
+                              title="{{localize "TS_DJ_MUSIC.Common.PlayFromTrack"}}"
+                            ><i class="fas {{playIcon}}"></i></button>
+                            <span class="index">{{index}}.</span>
+                            <span class="track-name">{{name}}</span>
+                          </div>
+                          {{/each}}
+                          {{#unless trackEntries.length}}
+                          <div class="ts-dj-music-sidebar-subrow is-empty">{{localize "TS_DJ_MUSIC.Notes.NoTracksAvailable"}}</div>
+                          {{/unless}}
+                        </div>
+                      </div>
+                    </div>
+                    {{/each}}
+                  {{else}}
+                    <p class="notes">{{localize "TS_DJ_MUSIC.Notes.NoAmbiencePlaylistsYet"}}</p>
+                  {{/if}}
+                </div>
+              </div>
+            </div>
+          </details>
 
-          <article class="ts-dj-card" data-card="ambience-tracks">
-            <header>
-              <h3>Ambience</h3>
-              <button type="button" data-action="create-ambience-track"><i class="fas fa-plus"></i> New</button>
-            </header>
-            <div class="ts-dj-list">
-              {{#if hasAmbienceTracks}}
-                {{#each ambienceTracks}}
-                <div class="ts-dj-row {{#if active}}is-active{{/if}}" data-ambience-track-id="{{id}}">
-                  <div class="ts-dj-row-main">
-                    <strong>{{name}}</strong>
-                    <div class="meta">File: {{fileName}}</div>
-                    <div class="meta">Clip: {{startLabel}} - {{endLabel}} | Speed: {{rateLabel}} | Loop: {{#if loop}}Yes{{else}}No{{/if}}</div>
-                  </div>
-                  <div class="ts-dj-actions">
-                    <button type="button" class="ts-dj-play-toggle" data-action="{{playAction}}" data-id="{{id}}"><i class="fas {{playIcon}}"></i></button>
-                    <button type="button" data-action="toggle-ambience-track-loop" data-id="{{id}}" class="loop {{#if loop}}is-on{{/if}}" title="Loop"><i class="fas fa-repeat"></i></button>
-                    <button type="button" data-action="edit-ambience-track" data-id="{{id}}"><i class="fas fa-pen"></i></button>
-                    <button type="button" data-action="delete-ambience-track" data-id="{{id}}"><i class="fas fa-trash"></i></button>
-                  </div>
-                </div>
-                {{/each}}
-              {{else}}
-                <p class="notes">No ambience tracks yet.</p>
-              {{/if}}
+          <details class="ts-dj-card ts-dj-card-collapse" data-card="ambience-tracks" data-card-key="ambienceTracks" {{#if managerCards.ambienceTracks.expanded}}open{{/if}}>
+            <summary>
+              <span class="ts-dj-card-summary-label">{{localize "TS_DJ_MUSIC.Common.Ambience"}}</span>
+            </summary>
+            <div class="ts-dj-card-actions">
+              <button type="button" data-action="create-ambience-track"><i class="fas fa-plus"></i> {{localize "TS_DJ_MUSIC.Common.New"}}</button>
+              <button type="button" class="ts-dj-icon-button" data-action="delete-ambience-tracks-block" title="{{localize "TS_DJ_MUSIC.Dialogs.DeleteAllAmbienceTracksTitle"}}" aria-label="{{localize "TS_DJ_MUSIC.Dialogs.DeleteAllAmbienceTracksTitle"}}"><i class="fas fa-trash"></i></button>
             </div>
-          </article>
+            <div class="ts-dj-card-content">
+              <div class="ts-dj-card-content-inner">
+                <div class="ts-dj-list">
+                  {{#if hasAmbienceTracks}}
+                    {{#each ambienceTracks}}
+                    <div class="ts-dj-row {{#if active}}is-active{{/if}}" data-ambience-track-id="{{id}}">
+                      <div class="ts-dj-row-main">
+                        <strong>{{name}}</strong>
+                        <div class="meta">{{localize "TS_DJ_MUSIC.Common.File"}}: {{fileName}}</div>
+                        <div class="meta">{{localize "TS_DJ_MUSIC.Common.Clip"}}: {{startLabel}} - {{endLabel}} | {{localize "TS_DJ_MUSIC.Common.Speed"}}: {{rateLabel}} | {{localize "TS_DJ_MUSIC.Common.Loop"}}: {{#if loop}}{{localize "TS_DJ_MUSIC.Common.Yes"}}{{else}}{{localize "TS_DJ_MUSIC.Common.No"}}{{/if}}</div>
+                      </div>
+                      <div class="ts-dj-actions">
+                        <button type="button" class="ts-dj-play-toggle" data-action="{{playAction}}" data-id="{{id}}"><i class="fas {{playIcon}}"></i></button>
+                        <button type="button" data-action="toggle-ambience-track-loop" data-id="{{id}}" class="loop {{#if loop}}is-on{{/if}}" title="{{localize "TS_DJ_MUSIC.Common.Loop"}}"><i class="fas fa-repeat"></i></button>
+                        <button type="button" data-action="edit-ambience-track" data-id="{{id}}" title="{{localize "TS_DJ_MUSIC.Common.Edit"}}" aria-label="{{localize "TS_DJ_MUSIC.Common.Edit"}}"><i class="fas fa-pen"></i></button>
+                        <button type="button" data-action="delete-ambience-track" data-id="{{id}}" title="{{localize "TS_DJ_MUSIC.Common.Delete"}}" aria-label="{{localize "TS_DJ_MUSIC.Common.Delete"}}"><i class="fas fa-trash"></i></button>
+                      </div>
+                    </div>
+                    {{/each}}
+                  {{else}}
+                    <p class="notes">{{localize "TS_DJ_MUSIC.Notes.NoAmbienceTracksYet"}}</p>
+                  {{/if}}
+                </div>
+              </div>
+            </div>
+          </details>
         </div>
       </div>
     </details>

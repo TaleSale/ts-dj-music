@@ -66,6 +66,14 @@
 }
 
 .ts-dj-settings-actions {
+  --ts-dj-action-button-size: 30px;
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.ts-dj-card-actions {
+  --ts-dj-action-button-size: 28px;
   display: inline-flex;
   gap: 6px;
   align-items: center;
@@ -73,6 +81,10 @@
 
 .ts-dj-settings-actions button {
   height: 30px;
+}
+
+.ts-dj-icon-button {
+  padding: 0;
 }
 .ts-dj-sections {
   display: flex;
@@ -125,20 +137,130 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden;
 }
 
-.ts-dj-card > header {
+.ts-dj-card-static-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: 6px;
-  padding: 8px;
+  justify-content: space-between;
+  gap: 10px;
+  font-weight: 700;
+  min-height: 36px;
+  padding: 8px 10px 8px 12px;
   border-bottom: 1px solid var(--color-border-light-2);
 }
 
-.ts-dj-card > header h3 {
+.ts-dj-card-collapse > summary {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  font-weight: 700;
+  padding: 8px 112px 8px 24px;
+  user-select: none;
+  list-style: none;
+  position: relative;
+  min-width: 0;
+  width: 100%;
+  min-height: 36px;
   margin: 0;
-  font-size: 1rem;
+  box-sizing: border-box;
+}
+
+.ts-dj-card-collapse > summary::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 6px solid currentColor;
+  transform: translateY(-50%);
+  transform-origin: 35% 50%;
+  transition: transform 200ms ease;
+}
+
+.ts-dj-card-collapse[open] > summary::before {
+  transform: translateY(-50%) rotate(90deg);
+}
+
+.ts-dj-card-collapse > summary::-webkit-details-marker {
+  display: none;
+}
+
+.ts-dj-card-collapse > summary::marker {
+  content: "";
+}
+
+.ts-dj-card-collapse {
+  position: relative;
+}
+
+.ts-dj-card-collapse[open] > summary {
+  border-bottom: 1px solid var(--color-border-light-2);
+}
+
+.ts-dj-card-summary-label {
+  min-width: 0;
+}
+
+.ts-dj-card-collapse > .ts-dj-card-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  z-index: 1;
+}
+
+.ts-dj-card-collapse > .ts-dj-card-actions button {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 0.9em;
+  background: color-mix(in srgb, var(--color-bg-option) 85%, transparent);
+  border: 1px solid var(--color-border-light-2);
+  box-shadow: none;
+}
+
+.ts-dj-card-static-header > .ts-dj-card-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding: 2px;
+  border-radius: 6px;
+}
+
+.ts-dj-card-static-header > .ts-dj-card-actions button {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 0.9em;
+  background: color-mix(in srgb, var(--color-bg-option) 85%, transparent);
+  border: 1px solid var(--color-border-light-2);
+  box-shadow: none;
+  border-radius: 4px;
+}
+
+.ts-dj-card-collapse > .ts-dj-card-content {
+  width: 100%;
+}
+
+.ts-dj-card-content {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 250ms ease;
+  min-height: 0;
+}
+
+.ts-dj-card-content-inner {
+  overflow: hidden;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .ts-dj-list {
@@ -210,6 +332,48 @@
   color: var(--color-text-accent);
 }
 
+.ts-dj-manager-playlist {
+  display: flex;
+  flex-direction: column;
+}
+
+.ts-dj-manager-playlist .ts-dj-music-sidebar-row {
+  padding: 6px;
+  border-radius: 6px;
+}
+
+.ts-dj-manager-playlist .ts-dj-music-sidebar-row .row-actions button {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.ts-dj-manager-playlist .ts-dj-music-sidebar-row .row-actions button > i,
+.ts-dj-music-sidebar-subrow button.play-from-track > i {
+  display: block;
+  line-height: 1;
+}
+
+.ts-dj-manager-playlist .ts-dj-music-sidebar-sublist {
+  margin-top: 4px;
+}
+
+.ts-dj-manager-playlist .ts-dj-music-sidebar-subrow {
+  border-radius: 4px;
+  cursor: grab;
+  user-select: none;
+}
+
+.ts-dj-manager-playlist .ts-dj-music-sidebar-subrow.is-dragging {
+  opacity: 0.55;
+  cursor: grabbing;
+}
+
 .ts-dj-music-window .checkbox {
   display: inline-flex;
   align-items: center;
@@ -244,7 +408,50 @@
 }
 
 .ts-dj-music-window .window-content button {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   white-space: nowrap;
+  line-height: 1;
+}
+
+.ts-dj-music-window .window-content button > i {
+  display: block;
+  margin: 0;
+  line-height: 1;
+}
+
+.ts-dj-music-window .window-content button.ts-dj-icon-button {
+  width: var(--ts-dj-action-button-size, 30px);
+  min-width: var(--ts-dj-action-button-size, 30px);
+  height: var(--ts-dj-action-button-size, 30px);
+  flex: 0 0 var(--ts-dj-action-button-size, 30px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1em;
+  gap: 0;
+  line-height: 0;
+  padding: 0 !important;
+}
+
+.ts-dj-music-window .window-content button.ts-dj-icon-button > i {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.ts-dj-settings-actions > .ts-dj-icon-button,
+.ts-dj-card-collapse > .ts-dj-card-actions > .ts-dj-icon-button,
+.ts-dj-card-static-header > .ts-dj-card-actions > .ts-dj-icon-button {
+  width: var(--ts-dj-action-button-size, 30px);
+  min-width: var(--ts-dj-action-button-size, 30px);
+  height: var(--ts-dj-action-button-size, 30px);
+  flex: 0 0 var(--ts-dj-action-button-size, 30px);
+  padding: 0 !important;
 }
 
 .ts-dj-dialog-form .ts-dj-preview-button {
@@ -254,6 +461,57 @@
   padding: 0;
   flex: 0 0 auto;
   margin-right: auto;
+}
+
+.ts-dj-playlist-track-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 2px 0;
+}
+
+.ts-dj-playlist-track-row {
+  display: grid;
+  grid-template-columns: 18px 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--color-border-light-2) 80%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-bg-option) 75%, transparent);
+  cursor: grab;
+  user-select: none;
+}
+
+.ts-dj-playlist-track-row.is-checked {
+  border-color: color-mix(in srgb, var(--color-text-accent) 45%, var(--color-border-light-2));
+  background: color-mix(in srgb, var(--color-text-accent) 10%, var(--color-bg-option));
+}
+
+.ts-dj-playlist-track-row.is-dragging {
+  opacity: 0.55;
+  cursor: grabbing;
+}
+
+.ts-dj-playlist-track-row > input[type="checkbox"] {
+  margin: 0;
+}
+
+.ts-dj-playlist-track-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-dark-secondary);
+  pointer-events: none;
+}
+
+.ts-dj-playlist-track-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ts-dj-music-sidebar-rate {
@@ -790,6 +1048,10 @@
   height: 20px;
   padding: 0;
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
 }
 
 .ts-dj-music-sidebar-empty {
@@ -871,6 +1133,24 @@
 .ts-dj-transfer-dialog__control--stacked > input[type="text"] {
   flex: 1 1 auto;
   width: 100%;
+}
+
+.ts-dj-transfer-dialog__control--file-picker {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.ts-dj-transfer-dialog__file-input {
+  display: none;
+}
+
+.ts-dj-transfer-dialog__file-name {
+  flex: 0 0 auto;
+  min-width: 0;
+  color: var(--color-text-dark-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ts-dj-transfer-dialog__control > input[type="text"],

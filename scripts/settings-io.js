@@ -21,6 +21,26 @@ const STORAGE_FLAG_KEYS = Object.freeze({
 const AUDIO_EXTENSIONS = new Set([".mp3", ".ogg", ".wav", ".webm", ".flac", ".m4a", ".aac"]);
 let importInProgress = false;
 
+const I18N_PREFIX = "TS_DJ_MUSIC";
+
+function i18nKey(key) {
+  return key.startsWith(`${I18N_PREFIX}.`) ? key : `${I18N_PREFIX}.${key}`;
+}
+
+function t(key, fallback = "") {
+  const fullKey = i18nKey(key);
+  const value = game?.i18n?.localize?.(fullKey);
+  return value && value !== fullKey ? value : fallback;
+}
+
+function tf(key, data = {}, fallback = null) {
+  const fullKey = i18nKey(key);
+  const value = game?.i18n?.format?.(fullKey, data);
+  if (value && value !== fullKey) return value;
+  if (typeof fallback === "function") return fallback(data);
+  return fallback ?? fullKey;
+}
+
 function normalizeArray(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -71,11 +91,40 @@ function stripSourcePrefix(path) {
   return stripLeadingSlash(path).replace(/^(data|public)\//i, "");
 }
 
+function getPathLookupCandidates(path) {
+  const normalizedPath = normalizePath(path);
+  const candidates = [];
+
+  if (!normalizedPath) return candidates;
+
+  candidates.push(normalizedPath);
+
+  const withoutLeadingSlash = stripLeadingSlash(normalizedPath);
+  if (withoutLeadingSlash && withoutLeadingSlash !== normalizedPath) {
+    candidates.push(withoutLeadingSlash);
+  }
+
+  const withoutSourcePrefix = stripSourcePrefix(normalizedPath);
+  if (withoutSourcePrefix && !candidates.includes(withoutSourcePrefix)) {
+    candidates.push(withoutSourcePrefix);
+  }
+
+  return candidates;
+}
+
 function getFileName(path) {
   const normalized = normalizePath(path);
   if (!normalized) return "";
   const parts = normalized.split("/");
   return decodePathComponent(parts.at(-1) ?? "");
+}
+
+function getParentDirectory(path) {
+  const normalized = normalizePath(path);
+  if (!normalized) return "";
+  const parts = normalized.split("/");
+  parts.pop();
+  return parts.join("/");
 }
 
 function decodePathComponent(value) {
@@ -106,6 +155,16 @@ function normalizeVolume(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return 1;
   return Math.max(0, Math.min(1, number));
+}
+
+function updateImportProgress(label, pct = 0) {
+  const progress = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
+  const displayProgressBar = globalThis.SceneNavigation?.displayProgressBar;
+  if (typeof displayProgressBar === "function") {
+    displayProgressBar.call(globalThis.SceneNavigation, { label, pct: progress });
+    return true;
+  }
+  return false;
 }
 
 function asString(value, fallback = "") {
@@ -255,30 +314,30 @@ function ensureJsonFileName(fileName, fallbackName = `${MODULE_ID}-settings.json
 async function promptExportTarget(defaultName) {
   return new Promise((resolve) => {
     new Dialog({
-      title: "TS-DJ-MUSIC | Export settings",
+      title: t("Transfer.ExportTitle", "TS-DJ-MUSIC | Export settings"),
       content: `
         <div class="ts-dj-transfer-dialog">
-          <p class="ts-dj-transfer-dialog__lead">Choose where to export the settings JSON.</p>
+          <p class="ts-dj-transfer-dialog__lead">${t("Transfer.ExportLead", "Choose where to export the settings JSON.")}</p>
           <section class="ts-dj-transfer-dialog__section">
             <div class="ts-dj-transfer-dialog__title-row">
-              <h3>Foundry Data</h3>
-              <span>Save into a folder accessible from the world.</span>
+              <h3>${t("Transfer.FoundryDataTitle", "Foundry Data")}</h3>
+              <span>${t("Transfer.FoundryDataDescription", "Save into a folder accessible from the world.")}</span>
             </div>
             <div class="ts-dj-transfer-dialog__field">
-              <label for="ts-dj-export-folder">Folder</label>
+              <label for="ts-dj-export-folder">${t("Transfer.FolderLabel", "Folder")}</label>
               <div class="ts-dj-transfer-dialog__control ts-dj-transfer-dialog__control--stacked">
-                <button type="button" id="ts-dj-export-folder-browse">Browse</button>
+                <button type="button" id="ts-dj-export-folder-browse">${t("Transfer.Browse", "Browse")}</button>
                 <input type="text" id="ts-dj-export-folder" value="worlds">
               </div>
             </div>
           </section>
           <section class="ts-dj-transfer-dialog__section">
             <div class="ts-dj-transfer-dialog__title-row">
-              <h3>File</h3>
-              <span>The same file name is used for both export options.</span>
+              <h3>${t("Transfer.FileSectionTitle", "File")}</h3>
+              <span>${t("Transfer.FileSectionDescription", "The same file name is used for both export options.")}</span>
             </div>
             <div class="ts-dj-transfer-dialog__field">
-              <label for="ts-dj-export-file">File name</label>
+              <label for="ts-dj-export-file">${t("Transfer.FileNameLabel", "File name")}</label>
               <div class="ts-dj-transfer-dialog__control">
                 <input type="text" id="ts-dj-export-file" value="${foundry.utils.escapeHTML(defaultName)}">
               </div>
@@ -286,15 +345,15 @@ async function promptExportTarget(defaultName) {
           </section>
           <section class="ts-dj-transfer-dialog__section ts-dj-transfer-dialog__section--muted">
             <div class="ts-dj-transfer-dialog__title-row">
-              <h3>Computer</h3>
-              <span>Use Download to save the JSON directly to your device.</span>
+              <h3>${t("Transfer.ComputerTitle", "Computer")}</h3>
+              <span>${t("Transfer.ComputerDescription", "Use Download to save the JSON directly to your device.")}</span>
             </div>
           </section>
         </div>
       `,
       buttons: {
         saveToData: {
-          label: "Export to Foundry Data",
+          label: t("Transfer.ExportToFoundryData", "Export to Foundry Data"),
           callback: (html) => {
             const folder = normalizePath(html.find("#ts-dj-export-folder").val());
             const file = ensureJsonFileName(html.find("#ts-dj-export-file").val(), defaultName);
@@ -302,14 +361,14 @@ async function promptExportTarget(defaultName) {
           },
         },
         saveToComputer: {
-          label: "Export to Computer",
+          label: t("Transfer.ExportToComputer", "Export to Computer"),
           callback: (html) => {
             const file = ensureJsonFileName(html.find("#ts-dj-export-file").val(), defaultName);
             resolve({ mode: "download", file });
           },
         },
         cancel: {
-          label: "Cancel",
+          label: t("Common.Cancel", "Cancel"),
           callback: () => resolve(null),
         },
       },
@@ -381,33 +440,42 @@ async function promptImportPath(initialValue = "") {
 
 async function promptImportSource(initialValue = "") {
   return new Promise((resolve) => {
+    let settled = false;
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
     new Dialog({
-      title: "TS-DJ-MUSIC | Import settings",
+      title: t("Transfer.ImportTitle", "TS-DJ-MUSIC | Import settings"),
       content: `
         <div class="ts-dj-transfer-dialog">
-          <p class="ts-dj-transfer-dialog__lead">Choose where to load the settings JSON from.</p>
+          <p class="ts-dj-transfer-dialog__lead">${t("Transfer.ImportLead", "Choose where to load the settings JSON from.")}</p>
           <section class="ts-dj-transfer-dialog__section">
             <div class="ts-dj-transfer-dialog__title-row">
-              <h3>Foundry Data</h3>
-              <span>Select an existing JSON file from the data directory.</span>
+              <h3>${t("Transfer.FoundryDataTitle", "Foundry Data")}</h3>
+              <span>${t("Transfer.FoundryDataImportDescription", "Select an existing JSON file from the data directory.")}</span>
             </div>
             <div class="ts-dj-transfer-dialog__field">
-              <label for="ts-dj-import-path">JSON file</label>
+              <label for="ts-dj-import-path">${t("Transfer.JsonFileLabel", "JSON file")}</label>
               <div class="ts-dj-transfer-dialog__control ts-dj-transfer-dialog__control--stacked">
-                <button type="button" id="ts-dj-import-path-browse">Browse</button>
+                <button type="button" id="ts-dj-import-path-browse">${t("Transfer.Browse", "Browse")}</button>
                 <input type="text" id="ts-dj-import-path" value="${foundry.utils.escapeHTML(initialValue)}" placeholder="worlds/.../ts-dj-music-settings.json">
               </div>
             </div>
           </section>
           <section class="ts-dj-transfer-dialog__section">
             <div class="ts-dj-transfer-dialog__title-row">
-              <h3>Computer</h3>
-              <span>Choose a local JSON file from your device.</span>
+              <h3>${t("Transfer.ComputerTitle", "Computer")}</h3>
+              <span>${t("Transfer.ComputerImportDescription", "Choose a local JSON file from your device.")}</span>
             </div>
             <div class="ts-dj-transfer-dialog__field">
-              <label for="ts-dj-import-file">Local file</label>
-              <div class="ts-dj-transfer-dialog__control">
-                <input type="file" id="ts-dj-import-file" accept=".json,application/json">
+              <label for="ts-dj-import-file">${t("Transfer.LocalFileLabel", "Local file")}</label>
+              <div class="ts-dj-transfer-dialog__control ts-dj-transfer-dialog__control--file-picker">
+                <input type="file" id="ts-dj-import-file" class="ts-dj-transfer-dialog__file-input" accept=".json,application/json">
+                <button type="button" id="ts-dj-import-file-browse">${t("Transfer.Browse", "Browse")}</button>
+                <div id="ts-dj-import-file-name" class="ts-dj-transfer-dialog__file-name">${t("Transfer.NoFileChosen", "No file chosen")}</div>
               </div>
             </div>
           </section>
@@ -415,27 +483,33 @@ async function promptImportSource(initialValue = "") {
       `,
       buttons: {
         importFromData: {
-          label: "Import from Foundry Data",
+          label: t("Transfer.ImportFromFoundryData", "Import from Foundry Data"),
           callback: (html) => {
             const path = normalizePath(html.find("#ts-dj-import-path").val());
-            resolve(path ? { mode: "data", path } : null);
+            settle(path ? { mode: "data", path } : null);
           },
         },
         importFromComputer: {
-          label: "Import from Computer",
+          label: t("Transfer.ImportFromComputer", "Import from Computer"),
           callback: (html) => {
             const input = html.find("#ts-dj-import-file")[0];
             const file = input?.files?.[0] ?? null;
-            resolve(file ? { mode: "file", file } : null);
+            settle(file ? { mode: "file", file } : null);
           },
         },
         cancel: {
-          label: "Cancel",
-          callback: () => resolve(null),
+          label: t("Common.Cancel", "Cancel"),
+          callback: () => settle(null),
         },
       },
       default: "importFromData",
+      close: () => settle(null),
       render: (html) => {
+        const updateLocalFileName = () => {
+          const file = html.find("#ts-dj-import-file")[0]?.files?.[0] ?? null;
+          html.find("#ts-dj-import-file-name").text(file?.name || t("Transfer.NoFileChosen", "No file chosen"));
+        };
+
         const updateImportButtons = () => {
           const hasPath = Boolean(normalizePath(html.find("#ts-dj-import-path").val()));
           const hasLocalFile = Boolean(html.find("#ts-dj-import-file")[0]?.files?.length);
@@ -452,8 +526,16 @@ async function promptImportSource(initialValue = "") {
           updateImportButtons();
         });
 
+        html.find("#ts-dj-import-file-browse").on("click", () => {
+          html.find("#ts-dj-import-file").trigger("click");
+        });
+
         html.find("#ts-dj-import-path").on("input change", updateImportButtons);
-        html.find("#ts-dj-import-file").on("change", updateImportButtons);
+        html.find("#ts-dj-import-file").on("change", () => {
+          updateLocalFileName();
+          updateImportButtons();
+        });
+        updateLocalFileName();
         updateImportButtons();
       },
     }, { width: 560 }).render(true);
@@ -489,33 +571,6 @@ async function readJsonFromLocalFile(file) {
   return JSON.parse(text);
 }
 
-async function promptFolderPath(_message, initialValue = "") {
-  return new Promise((resolve) => {
-    let settled = false;
-    const picker = new FilePicker({
-      type: "folder",
-      source: "data",
-      current: normalizePath(initialValue) || undefined,
-      callback: (folderPath) => {
-        settled = true;
-        resolve(normalizePath(folderPath) || null);
-      },
-    });
-
-    const originalClose = picker.close.bind(picker);
-    picker.close = async (...args) => {
-      const result = await originalClose(...args);
-      if (!settled) {
-        settled = true;
-        resolve(null);
-      }
-      return result;
-    };
-
-    picker.render(true);
-  });
-}
-
 async function browseDataDirectory(directory) {
   const normalizedDirectory = normalizePath(directory);
   const withoutLeadingSlash = stripLeadingSlash(normalizedDirectory);
@@ -524,7 +579,7 @@ async function browseDataDirectory(directory) {
     ? [normalizedDirectory, withoutLeadingSlash, withoutSourcePrefix, `/${withoutLeadingSlash}`, `/${withoutSourcePrefix}`]
     : ["", "/", "."];
 
-  const uniqueCandidates = [...new Set(candidates.filter(Boolean))];
+  const uniqueCandidates = [...new Set(candidates.filter((candidate) => candidate !== null && candidate !== undefined))];
   let lastError = null;
 
   for (const candidate of uniqueCandidates) {
@@ -561,10 +616,169 @@ function resolveBrowseEntryPath(baseDirectory, rawEntryPath) {
   return joinPath(basePath, entryPath);
 }
 
-async function buildFolderIndex(folderPath) {
+function createImportRequirements(importedFiles) {
+  const byPathKey = new Map();
+  const byName = new Map();
+  const unresolvedExact = new Set();
+
+  let requirementId = 0;
+
+  for (const rawFile of normalizeArray(importedFiles)) {
+    const file = normalizeObject(rawFile);
+    const rawPath = asString(file.path);
+    if (!rawPath) continue;
+
+    const candidatePaths = [...new Set(getPathLookupCandidates(rawPath))];
+    const candidateKeys = candidatePaths.map((path) => toPathKey(path)).filter(Boolean);
+    const fileName = getFileName(rawPath).toLowerCase();
+    if (candidateKeys.length === 0 && !fileName) continue;
+
+    const currentId = requirementId;
+    requirementId += 1;
+    if (candidateKeys.length > 0) {
+      unresolvedExact.add(currentId);
+    }
+
+    for (const candidateKey of candidateKeys) {
+      if (!byPathKey.has(candidateKey)) byPathKey.set(candidateKey, []);
+      byPathKey.get(candidateKey).push(currentId);
+    }
+
+    if (fileName) {
+      if (!byName.has(fileName)) byName.set(fileName, []);
+      byName.get(fileName).push(currentId);
+    }
+  }
+
+  return { byPathKey, byName, unresolvedExact };
+}
+
+async function buildExactPathIndex(importedFiles) {
+  const byPath = new Map();
+  const candidateDirectories = new Map();
+
+  for (const rawFile of normalizeArray(importedFiles)) {
+    const file = normalizeObject(rawFile);
+    const rawPath = asString(file.path);
+    if (!rawPath) continue;
+
+    for (const candidatePath of getPathLookupCandidates(rawPath)) {
+      const directory = getParentDirectory(candidatePath);
+      candidateDirectories.set(directory, (candidateDirectories.get(directory) ?? 0) + 1);
+    }
+  }
+
+  const directories = [...candidateDirectories.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .map(([directory]) => directory);
+
+  for (const directory of directories) {
+    let result;
+    try {
+      result = await browseDataDirectory(directory);
+    } catch (_error) {
+      continue;
+    }
+
+    for (const filePath of normalizeArray(result.files)) {
+      const normalizedFilePath = resolveBrowseEntryPath(directory, extractBrowsePath(filePath));
+      if (!normalizedFilePath) continue;
+
+      const extension = `.${(normalizedFilePath.split(".").at(-1) ?? "").toLowerCase()}`;
+      if (!AUDIO_EXTENSIONS.has(extension)) continue;
+
+      const pathKey = toPathKey(normalizedFilePath);
+      byPath.set(pathKey, normalizedFilePath);
+    }
+  }
+
+  return { byPath, byName: new Map() };
+}
+
+function mergeFolderIndexes(...indexes) {
+  const result = { byPath: new Map(), byName: new Map() };
+
+  for (const index of indexes) {
+    if (!index) continue;
+
+    for (const [pathKey, pathValue] of index.byPath ?? new Map()) {
+      result.byPath.set(pathKey, pathValue);
+    }
+
+    for (const [fileName, matches] of index.byName ?? new Map()) {
+      if (!result.byName.has(fileName)) result.byName.set(fileName, []);
+      const nextMatches = result.byName.get(fileName);
+      for (const match of matches) {
+        if (!nextMatches.includes(match)) {
+          nextMatches.push(match);
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
+async function buildFolderIndex(folderPath, requirements = null) {
   const byPath = new Map();
   const byName = new Map();
   const visited = new Set();
+  const byRequiredPathKey = requirements?.byPathKey ?? new Map();
+  const byRequiredName = requirements?.byName ?? new Map();
+  const unresolvedExact = requirements?.unresolvedExact ?? null;
+  const hotDirectoryKeys = new Map();
+  const hasRelevantNestedPath = (directoryPath) => {
+    if (!unresolvedExact || unresolvedExact.size === 0) return false;
+
+    const directoryKey = toPathKey(directoryPath);
+    if (!directoryKey) return true;
+
+    for (const [candidateKey, requirementIds] of byRequiredPathKey.entries()) {
+      if (candidateKey !== directoryKey && !candidateKey.startsWith(`${directoryKey}/`)) continue;
+      if (requirementIds.some((requirementId) => unresolvedExact.has(requirementId))) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+  const getParentDirectoryKey = (directoryKey) => {
+    const parts = directoryKey.split("/");
+    parts.pop();
+    return parts.join("/");
+  };
+  const markHotDirectory = (directoryPath, weight = 1) => {
+    const directoryKey = toPathKey(directoryPath);
+    if (!directoryKey) return;
+    hotDirectoryKeys.set(directoryKey, (hotDirectoryKeys.get(directoryKey) ?? 0) + weight);
+  };
+  const getHotDirectoryScore = (directoryPath) => {
+    const directoryKey = toPathKey(directoryPath);
+    if (!directoryKey) return 0;
+
+    let score = hotDirectoryKeys.get(directoryKey) ?? 0;
+    const parentKey = getParentDirectoryKey(directoryKey);
+
+    for (const [hotKey, hotWeight] of hotDirectoryKeys.entries()) {
+      if (hotKey === directoryKey) {
+        score += hotWeight * 8;
+        continue;
+      }
+      if (hotKey.startsWith(`${directoryKey}/`)) {
+        score += hotWeight * 6;
+        continue;
+      }
+      if (directoryKey.startsWith(`${hotKey}/`)) {
+        score += hotWeight * 4;
+        continue;
+      }
+      if (parentKey && parentKey === getParentDirectoryKey(hotKey)) {
+        score += hotWeight * 2;
+      }
+    }
+
+    return score;
+  };
 
   const visit = async (directory) => {
     const normalizedDirectory = normalizePath(directory);
@@ -572,6 +786,7 @@ async function buildFolderIndex(folderPath) {
     const key = toPathKey(normalizedDirectory) || "<root>";
     if (visited.has(key)) return;
     visited.add(key);
+    if (unresolvedExact && unresolvedExact.size === 0) return;
 
     let result;
     try {
@@ -580,23 +795,74 @@ async function buildFolderIndex(folderPath) {
       return;
     }
 
+    let matchedInDirectory = 0;
     for (const filePath of normalizeArray(result.files)) {
       const normalizedFilePath = resolveBrowseEntryPath(normalizedDirectory, extractBrowsePath(filePath));
       if (!normalizedFilePath) continue;
       const extension = `.${(normalizedFilePath.split(".").at(-1) ?? "").toLowerCase()}`;
       if (!AUDIO_EXTENSIONS.has(extension)) continue;
-
-      byPath.set(toPathKey(normalizedFilePath), normalizedFilePath);
-
+      const pathKey = toPathKey(normalizedFilePath);
       const fileName = getFileName(normalizedFilePath).toLowerCase();
+
+      if (requirements) {
+        const matchesPath = byRequiredPathKey.has(pathKey);
+        const matchesName = fileName && byRequiredName.has(fileName);
+        if (!matchesPath && !matchesName) continue;
+
+        if (matchesPath) {
+          byPath.set(pathKey, normalizedFilePath);
+          for (const requirementId of byRequiredPathKey.get(pathKey)) {
+            unresolvedExact.delete(requirementId);
+          }
+          matchedInDirectory += 2;
+        }
+
+        if (matchesName) {
+          if (!byName.has(fileName)) byName.set(fileName, []);
+          const fileMatches = byName.get(fileName);
+          if (!fileMatches.includes(normalizedFilePath)) {
+            fileMatches.push(normalizedFilePath);
+          }
+          matchedInDirectory += 1;
+        }
+        continue;
+      }
+
+      byPath.set(pathKey, normalizedFilePath);
       if (!byName.has(fileName)) byName.set(fileName, []);
       byName.get(fileName).push(normalizedFilePath);
     }
 
-    for (const nested of normalizeArray(result.dirs)) {
-      const nestedPath = resolveBrowseEntryPath(normalizedDirectory, extractBrowsePath(nested));
-      if (!nestedPath) continue;
-      await visit(nestedPath);
+    if (matchedInDirectory > 0) {
+      markHotDirectory(normalizedDirectory, matchedInDirectory);
+    }
+
+    const pendingDirectories = normalizeArray(result.dirs)
+      .map((nested) => resolveBrowseEntryPath(normalizedDirectory, extractBrowsePath(nested)))
+      .filter(Boolean);
+
+    while (pendingDirectories.length > 0) {
+      if (unresolvedExact && unresolvedExact.size === 0) break;
+
+      let nextIndex = 0;
+      let nextScore = -1;
+      for (let index = 0; index < pendingDirectories.length; index += 1) {
+        const candidate = pendingDirectories[index];
+        let candidateScore = 0;
+        if (requirements && unresolvedExact && unresolvedExact.size > 0 && hasRelevantNestedPath(candidate)) {
+          candidateScore += 1000;
+        }
+        if (requirements) {
+          candidateScore += getHotDirectoryScore(candidate);
+        }
+        if (candidateScore > nextScore) {
+          nextIndex = index;
+          nextScore = candidateScore;
+        }
+      }
+
+      const [nextDirectory] = pendingDirectories.splice(nextIndex, 1);
+      await visit(nextDirectory);
     }
   };
 
@@ -604,25 +870,10 @@ async function buildFolderIndex(folderPath) {
   return { byPath, byName };
 }
 
-function resolvePath(rawPath, folderIndex, selectedFolder) {
+function resolvePath(rawPath, folderIndex) {
   const normalizedPath = normalizePath(rawPath);
-  const normalizedPathWithoutSlash = stripLeadingSlash(normalizedPath);
-  const normalizedPathWithoutSourcePrefix = stripSourcePrefix(normalizedPath);
   const fileName = getFileName(normalizedPath);
-  const candidates = [];
-
-  if (normalizedPath) {
-    candidates.push(normalizedPath);
-    if (normalizedPathWithoutSlash && normalizedPathWithoutSlash !== normalizedPath) {
-      candidates.push(normalizedPathWithoutSlash);
-    }
-    if (normalizedPathWithoutSourcePrefix && !candidates.includes(normalizedPathWithoutSourcePrefix)) {
-      candidates.push(normalizedPathWithoutSourcePrefix);
-    }
-    if (selectedFolder) candidates.push(joinPath(selectedFolder, fileName || normalizedPath));
-  } else if (selectedFolder && fileName) {
-    candidates.push(joinPath(selectedFolder, fileName));
-  }
+  const candidates = getPathLookupCandidates(normalizedPath);
 
   for (const candidate of candidates) {
     const match = folderIndex.byPath.get(toPathKey(candidate));
@@ -637,7 +888,7 @@ function resolvePath(rawPath, folderIndex, selectedFolder) {
   return null;
 }
 
-function normalizeImportedFiles(importedFiles, folderIndex, selectedFolder) {
+function normalizeImportedFiles(importedFiles, folderIndex) {
   const resultFiles = [];
   const oldToNewId = new Map();
   const usedIds = new Set();
@@ -651,7 +902,7 @@ function normalizeImportedFiles(importedFiles, folderIndex, selectedFolder) {
       continue;
     }
 
-    const resolvedPath = resolvePath(rawPath, folderIndex, selectedFolder);
+    const resolvedPath = resolvePath(rawPath, folderIndex);
     if (!resolvedPath) {
       missing += 1;
       continue;
@@ -688,7 +939,7 @@ function normalizeImportedTracks(importedTracks, oldToNewFileId) {
 
     tracks.push({
       id: newTrackId,
-      name: asString(track.name, "Track"),
+      name: asString(track.name, t("Transfer.TrackFallback", "Track")),
       fileId: mappedFileId,
       start: asString(track.start),
       end: asString(track.end),
@@ -718,7 +969,7 @@ function normalizeImportedPlaylists(importedPlaylists, oldToNewTrackId) {
 
     playlists.push({
       id: uniqueId(asString(playlist.id, foundry.utils.randomID()), usedIds),
-      name: asString(playlist.name, "Playlist"),
+      name: asString(playlist.name, t("Transfer.PlaylistFallback", "Playlist")),
       loop: Boolean(playlist.loop),
       shuffle: Boolean(playlist.shuffle),
       trackIds,
@@ -728,26 +979,29 @@ function normalizeImportedPlaylists(importedPlaylists, oldToNewTrackId) {
   return { playlists, skipped };
 }
 
-async function applyImportedSettings(payload, selectedFolder = "") {
+async function applyImportedSettings(payload) {
   const incoming = toImportShape(payload);
-  const normalizedSelectedFolder = normalizePath(selectedFolder);
-
-  const requiredPaths = incoming.files
-    .map((entry) => normalizePath(normalizeObject(entry).path))
-    .filter(Boolean);
-  const requiredNames = new Set(requiredPaths.map((path) => getFileName(path).toLowerCase()).filter(Boolean));
-
   let folderIndex = { byPath: new Map(), byName: new Map() };
 
-  if (requiredNames.size > 0 && normalizedSelectedFolder) {
-    folderIndex = await buildFolderIndex(normalizedSelectedFolder);
+  if (incoming.files.length > 0) {
+    updateImportProgress(t("Transfer.ProgressCheckPaths", "TS-DJ-MUSIC: import in progress. Checking JSON paths..."), 10);
+    folderIndex = mergeFolderIndexes(folderIndex, await buildExactPathIndex(incoming.files));
   }
 
-  const { resultFiles, oldToNewId, missing } = normalizeImportedFiles(
-    incoming.files,
-    folderIndex,
-    normalizedSelectedFolder
-  );
+  const missingImportedFiles = incoming.files.filter((rawFile) => {
+    const file = normalizeObject(rawFile);
+    const rawPath = asString(file.path);
+    if (!rawPath) return false;
+    return !resolvePath(rawPath, folderIndex);
+  });
+
+  if (missingImportedFiles.length > 0) {
+    const requirements = createImportRequirements(missingImportedFiles);
+    updateImportProgress(t("Transfer.ProgressSearchFiles", "TS-DJ-MUSIC: import in progress. Searching missing audio files..."), 25);
+    folderIndex = mergeFolderIndexes(folderIndex, await buildFolderIndex("", requirements));
+  }
+
+  const { resultFiles, oldToNewId, missing } = normalizeImportedFiles(incoming.files, folderIndex);
 
   const { tracks, oldToNewTrackId } = normalizeImportedTracks(incoming.tracks, oldToNewId);
   const { tracks: ambienceTracks, oldToNewTrackId: oldToNewAmbienceTrackId } = normalizeImportedTracks(incoming.ambienceTracks, oldToNewId);
@@ -755,6 +1009,7 @@ async function applyImportedSettings(payload, selectedFolder = "") {
   const { playlists, skipped: skippedPlaylists } = normalizeImportedPlaylists(incoming.playlists, oldToNewTrackId);
   const { playlists: ambiencePlaylists, skipped: skippedAmbiencePlaylists } = normalizeImportedPlaylists(incoming.ambiencePlaylists, oldToNewAmbienceTrackId);
 
+  updateImportProgress(t("Transfer.ProgressApply", "TS-DJ-MUSIC: import in progress. Applying settings..."), 80);
   await setStorageSnapshot({
     files: resultFiles,
     tracks,
@@ -785,7 +1040,7 @@ async function applyImportedSettings(payload, selectedFolder = "") {
 
 export async function exportModuleSettings() {
   if (!canCurrentUserExportSettings(game.user)) {
-    ui.notifications.warn("TS-DJ-MUSIC: no permission to export settings.");
+    ui.notifications.warn(t("Transfer.ExportPermissionDenied", "TS-DJ-MUSIC: no permission to export settings."));
     return false;
   }
 
@@ -804,14 +1059,14 @@ export async function exportModuleSettings() {
   try {
     if (target.mode === "download") {
       const savedFile = await downloadJsonToComputer(payload, target.file);
-      ui.notifications.info(`TS-DJ-MUSIC: settings exported to ${savedFile}.`);
+      ui.notifications.info(tf("Transfer.ExportSavedFile", { path: savedFile }, ({ path }) => `TS-DJ-MUSIC: settings exported to ${path}.`));
     } else {
       const savedPath = await uploadJsonToDataFolder(payload, target.folder, target.file);
-      ui.notifications.info(`TS-DJ-MUSIC: settings exported to ${savedPath}.`);
+      ui.notifications.info(tf("Transfer.ExportSavedPath", { path: savedPath }, ({ path }) => `TS-DJ-MUSIC: settings exported to ${path}.`));
     }
   } catch (error) {
     console.warn(`${MODULE_ID} | export failed`, error);
-    ui.notifications.error("TS-DJ-MUSIC: export failed.");
+    ui.notifications.error(t("Transfer.ExportFailed", "TS-DJ-MUSIC: export failed."));
     return false;
   }
 
@@ -820,7 +1075,7 @@ export async function exportModuleSettings() {
 
 export async function importModuleSettings() {
   if (!canCurrentUserExportSettings(game.user)) {
-    ui.notifications.warn("TS-DJ-MUSIC: no permission to import settings.");
+    ui.notifications.warn(t("Transfer.ImportPermissionDenied", "TS-DJ-MUSIC: no permission to import settings."));
     return { applied: false, cancelled: false };
   }
 
@@ -845,27 +1100,34 @@ export async function importModuleSettings() {
     } catch (error) {
       console.warn(`${MODULE_ID} | import read failed`, error);
       ui.notifications.error(source.mode === "file"
-        ? "TS-DJ-MUSIC: failed to load JSON from your computer."
-        : "TS-DJ-MUSIC: failed to load JSON from Foundry Data.");
+        ? t("Transfer.ImportReadFailedComputer", "TS-DJ-MUSIC: failed to load JSON from your computer.")
+        : t("Transfer.ImportReadFailedFoundry", "TS-DJ-MUSIC: failed to load JSON from Foundry Data."));
       return { applied: false, cancelled: false };
     }
 
     if (!payload || typeof payload !== "object") {
-      ui.notifications.error("TS-DJ-MUSIC: invalid import payload.");
+      ui.notifications.error(t("Transfer.ImportInvalidPayload", "TS-DJ-MUSIC: invalid import payload."));
       return { applied: false, cancelled: false };
     }
 
-    const selectedFolder = await promptFolderPath("Select folder with audio files for imported settings.");
-    if (!selectedFolder) {
-      return { applied: false, cancelled: true };
+    if (!updateImportProgress(t("Transfer.ProgressStarted", "TS-DJ-MUSIC: import started..."), 5)) {
+      ui.notifications.info(t("Transfer.ImportStartedFallback", "TS-DJ-MUSIC: import started. Searching audio files..."));
     }
 
-    const result = await applyImportedSettings(payload, selectedFolder);
-    if (!result.applied && !result.cancelled) {
-      ui.notifications.warn("TS-DJ-MUSIC: import finished with no changes.");
-    }
+    try {
+      const result = await applyImportedSettings(payload);
+      updateImportProgress(t("Transfer.ProgressComplete", "TS-DJ-MUSIC: import complete."), 100);
+      if (!result.applied && !result.cancelled) {
+        ui.notifications.warn(t("Transfer.ImportNoChanges", "TS-DJ-MUSIC: import finished with no changes."));
+      }
 
-    return result;
+      return result;
+    } catch (error) {
+      updateImportProgress(t("Transfer.ProgressFailed", "TS-DJ-MUSIC: import failed."), 100);
+      console.warn(`${MODULE_ID} | import apply failed`, error);
+      ui.notifications.error(t("Transfer.ImportFailedApply", "TS-DJ-MUSIC: import failed while applying settings."));
+      return { applied: false, cancelled: false };
+    }
   } finally {
     importInProgress = false;
   }

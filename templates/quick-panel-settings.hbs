@@ -1,0 +1,17 @@
+<form class="ts-dj-quick-panel-settings-form">
+  {{#each settings}}
+  <div class="form-group">
+    <label>{{localize nameKey}}</label>
+    <div class="form-fields">
+      <input type="checkbox" name="settings.{{key}}" {{checked value}}>
+    </div>
+    <p class="notes">{{localize hintKey}}</p>
+  </div>
+  {{/each}}
+
+  <footer class="sheet-footer flexrow">
+    <button type="submit">
+      <i class="fas fa-save"></i> {{saveLabel}}
+    </button>
+  </footer>
+</form>

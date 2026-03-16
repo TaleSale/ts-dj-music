@@ -26,6 +26,7 @@ const MANAGER_CARD_IDS = Object.freeze({
 
 const RATE_VALUES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 const SOCKET_CHANNEL = `module.${MODULE_ID}`;
+const I18N_PREFIX = "TS_DJ_MUSIC";
 const SOUND_CHANNEL_MARK = Symbol("ts-dj-channel");
 const STORAGE_PLAYLIST_NAME = "TS-DJ-MUSIC Storage";
 const STORAGE_FLAG_KEYS = Object.freeze({
@@ -71,8 +72,39 @@ const SOCKET_CONTROL_ACTIONS = new Set([
 const INITIAL_SYNC_DELAY_MS = 350;
 const INITIAL_SYNC_TTL_MS = 10000;
 const PLAYLIST_DIRECTORY_SCROLL_CLASS = `${MODULE_ID}-playlist-directory-scroll`;
+const NAME_SORT_COLLATOR = new Intl.Collator(["ru", "en"], {
+  numeric: true,
+  sensitivity: "base",
+  ignorePunctuation: true,
+});
+const DEFAULT_CLIENT_SETTINGS = Object.freeze({
+  liveRate: 1,
+  liveMusicVolume: 1,
+  liveAmbienceVolume: 1,
+  collapseGlobalVolumeByDefault: false,
+  collapseTsDjPlaylistsByDefault: false,
+  collapseFoundryPlaylistsByDefault: false,
+});
 
 let appInstance = null;
+const managerSectionState = {
+  files: true,
+  music: true,
+  ambience: true,
+};
+const managerCardExpandState = {
+  musicPlaylists: true,
+  musicTracks: true,
+  ambiencePlaylists: true,
+  ambienceTracks: true,
+};
+const managerPlaylistExpandState = {};
+const managerAmbiencePlaylistExpandState = {};
+const managerPlaylistDragState = {
+  kind: null,
+  playlistId: null,
+  trackId: null,
+};
 const sidebarSectionState = {
   playlists: true,
   music: true,
@@ -119,6 +151,111 @@ let ambienceEnvironmentVolumeTicker = null;
 let lastAmbienceVolumeFingerprint = null;
 const pendingPlaybackSyncRequests = new Map();
 const segmentLoopIntervals = new WeakMap();
+
+function i18nKey(key) {
+  return key.startsWith(`${I18N_PREFIX}.`) ? key : `${I18N_PREFIX}.${key}`;
+}
+
+function t(key, fallback = "") {
+  const fullKey = i18nKey(key);
+  const value = game?.i18n?.localize?.(fullKey);
+  return value && value !== fullKey ? value : fallback;
+}
+
+function tf(key, data = {}, fallback = null) {
+  const fullKey = i18nKey(key);
+  const value = game?.i18n?.format?.(fullKey, data);
+  if (value && value !== fullKey) return value;
+  if (typeof fallback === "function") return fallback(data);
+  return fallback ?? fullKey;
+}
+
+function notify(type, key, data = {}, fallback = null) {
+  const hasData = data && Object.keys(data).length > 0;
+  const text = hasData
+    ? tf(`Notifications.${key}`, data, fallback)
+    : t(`Notifications.${key}`, fallback ?? key);
+  ui.notifications?.[type]?.(text);
+  return text;
+}
+
+function yesNo(value) {
+  return value ? t("Common.Yes", "Yes") : t("Common.No", "No");
+}
+
+function onOff(value) {
+  return value ? t("Common.On", "on") : t("Common.Off", "off");
+}
+
+function untitledName(value) {
+  return String(value ?? "").trim() || t("Common.Untitled", "Untitled");
+}
+
+function formatSidebarPlaylistMeta(count, loopEnabled, shuffleEnabled) {
+  return tf(
+    "Sidebar.PlaylistMeta",
+    { count, loop: yesNo(loopEnabled), shuffle: yesNo(shuffleEnabled) },
+    ({ count: total, loop, shuffle }) => `${total} tracks | loop: ${loop} | shuffle: ${shuffle}`
+  );
+}
+
+function formatSidebarTrackMeta(file, clip, loopEnabled) {
+  return tf(
+    "Sidebar.TrackMeta",
+    { file, clip, loop: onOff(loopEnabled) },
+    ({ file: fileName, clip: clipText, loop }) => `${fileName} | ${clipText} | loop: ${loop}`
+  );
+}
+
+class QuickPanelSettingsForm extends FormApplication {
+  static get defaultOptions() {
+    return foundry.utils.mergeObject(super.defaultOptions, {
+      id: `${MODULE_ID}-quick-panel-settings`,
+      classes: ["form", "ts-dj-quick-panel-settings"],
+      template: `modules/${MODULE_ID}/templates/quick-panel-settings.hbs`,
+      width: 520,
+    });
+  }
+
+  get title() {
+    return t("Settings.QuickPanelMenuTitle", "Quick Panel Settings");
+  }
+
+  getData(options = {}) {
+    const data = super.getData(options);
+    data.settings = [
+      {
+        key: SETTING_KEYS.collapseGlobalVolumeByDefault,
+        nameKey: i18nKey("Settings.CollapseGlobalVolumeName"),
+        hintKey: i18nKey("Settings.CollapseGlobalVolumeHint"),
+        value: Boolean(game.settings.get(MODULE_ID, SETTING_KEYS.collapseGlobalVolumeByDefault)),
+      },
+      {
+        key: SETTING_KEYS.collapseTsDjPlaylistsByDefault,
+        nameKey: i18nKey("Settings.CollapsePlaylistsName"),
+        hintKey: i18nKey("Settings.CollapsePlaylistsHint"),
+        value: Boolean(game.settings.get(MODULE_ID, SETTING_KEYS.collapseTsDjPlaylistsByDefault)),
+      },
+      {
+        key: SETTING_KEYS.collapseFoundryPlaylistsByDefault,
+        nameKey: i18nKey("Settings.CollapseFoundryName"),
+        hintKey: i18nKey("Settings.CollapseFoundryHint"),
+        value: Boolean(game.settings.get(MODULE_ID, SETTING_KEYS.collapseFoundryPlaylistsByDefault)),
+      },
+    ];
+    data.saveLabel = t("Common.Save", "Save");
+    return data;
+  }
+
+  async _updateObject(_event, formData) {
+    const values = foundry.utils.expandObject(formData)?.settings ?? {};
+    const getBoolean = (key) => Boolean(values[key]);
+
+    await game.settings.set(MODULE_ID, SETTING_KEYS.collapseGlobalVolumeByDefault, getBoolean(SETTING_KEYS.collapseGlobalVolumeByDefault));
+    await game.settings.set(MODULE_ID, SETTING_KEYS.collapseTsDjPlaylistsByDefault, getBoolean(SETTING_KEYS.collapseTsDjPlaylistsByDefault));
+    await game.settings.set(MODULE_ID, SETTING_KEYS.collapseFoundryPlaylistsByDefault, getBoolean(SETTING_KEYS.collapseFoundryPlaylistsByDefault));
+  }
+}
 
 Hooks.once("init", () => {
   registerSettings();
@@ -625,8 +762,17 @@ async function applyPlaybackSyncSnapshot(snapshot) {
 }
 
 function registerSettings() {
+  game.settings.registerMenu(MODULE_ID, "quickPanelSettings", {
+    name: i18nKey("Settings.QuickPanelMenuName"),
+    label: i18nKey("Settings.QuickPanelMenuLabel"),
+    hint: i18nKey("Settings.QuickPanelMenuHint"),
+    icon: "fa-solid fa-sliders",
+    type: QuickPanelSettingsForm,
+    restricted: false,
+  });
+
   game.settings.register(MODULE_ID, SETTING_KEYS.files, {
-    name: "DJ Files",
+    name: t("Settings.Files", "DJ Files"),
     scope: "world",
     config: false,
     type: Object,
@@ -634,7 +780,7 @@ function registerSettings() {
   });
 
   game.settings.register(MODULE_ID, SETTING_KEYS.tracks, {
-    name: "DJ Tracks",
+    name: t("Settings.Tracks", "DJ Tracks"),
     scope: "world",
     config: false,
     type: Object,
@@ -642,7 +788,7 @@ function registerSettings() {
   });
 
   game.settings.register(MODULE_ID, SETTING_KEYS.playlists, {
-    name: "DJ Playlists",
+    name: t("Settings.Playlists", "DJ Playlists"),
     scope: "world",
     config: false,
     type: Object,
@@ -650,7 +796,7 @@ function registerSettings() {
   });
 
   game.settings.register(MODULE_ID, SETTING_KEYS.ambienceTracks, {
-    name: "DJ Ambience Tracks",
+    name: t("Settings.AmbienceTracks", "DJ Ambience Tracks"),
     scope: "world",
     config: false,
     type: Object,
@@ -658,7 +804,7 @@ function registerSettings() {
   });
 
   game.settings.register(MODULE_ID, SETTING_KEYS.ambiencePlaylists, {
-    name: "DJ Ambience Playlists",
+    name: t("Settings.AmbiencePlaylists", "DJ Ambience Playlists"),
     scope: "world",
     config: false,
     type: Object,
@@ -666,7 +812,7 @@ function registerSettings() {
   });
 
   game.settings.register(MODULE_ID, SETTING_KEYS.ambienceAllowConcurrent, {
-    name: "Allow Multiple Ambience",
+    name: t("Settings.AllowMultipleAmbience", "Allow multiple ambience"),
     scope: "world",
     config: false,
     type: Boolean,
@@ -674,7 +820,7 @@ function registerSettings() {
   });
 
   game.settings.register(MODULE_ID, SETTING_KEYS.liveRate, {
-    name: "DJ Live Rate",
+    name: t("Settings.LiveRate", "DJ Live Rate"),
     scope: "client",
     config: false,
     type: Number,
@@ -682,7 +828,7 @@ function registerSettings() {
   });
 
   game.settings.register(MODULE_ID, SETTING_KEYS.liveMusicVolume, {
-    name: "DJ Live Music Volume",
+    name: t("Settings.LiveMusicVolume", "DJ Live Music Volume"),
     scope: "client",
     config: false,
     type: Number,
@@ -690,7 +836,7 @@ function registerSettings() {
   });
 
   game.settings.register(MODULE_ID, SETTING_KEYS.liveAmbienceVolume, {
-    name: "DJ Live Ambience Volume",
+    name: t("Settings.LiveAmbienceVolume", "DJ Live Ambience Volume"),
     scope: "client",
     config: false,
     type: Number,
@@ -702,7 +848,7 @@ function registerSettings() {
       name,
       hint,
       scope: "client",
-      config: true,
+      config: false,
       type: Boolean,
       default: false,
       onChange: () => {
@@ -714,18 +860,18 @@ function registerSettings() {
 
   registerSidebarDefaultCollapseSetting(
     SETTING_KEYS.collapseGlobalVolumeByDefault,
-    "Collapse TS-DJ Global Volume",
-    "When enabled, TS-DJ Global Volume starts collapsed for this user."
+    i18nKey("Settings.CollapseGlobalVolumeName"),
+    i18nKey("Settings.CollapseGlobalVolumeHint")
   );
   registerSidebarDefaultCollapseSetting(
     SETTING_KEYS.collapseTsDjPlaylistsByDefault,
-    "Collapse TS-DJ Playlists",
-    "When enabled, TS-DJ Playlists starts collapsed for this user."
+    i18nKey("Settings.CollapsePlaylistsName"),
+    i18nKey("Settings.CollapsePlaylistsHint")
   );
   registerSidebarDefaultCollapseSetting(
     SETTING_KEYS.collapseFoundryPlaylistsByDefault,
-    "Collapse Foundry Playlists",
-    "When enabled, Foundry Playlists starts collapsed for this user."
+    i18nKey("Settings.CollapseFoundryName"),
+    i18nKey("Settings.CollapseFoundryHint")
   );
 }
 
@@ -751,7 +897,7 @@ function canManagePlaylistControls() {
 
 function ensureModuleControlAccess() {
   if (canManagePlaylistControls()) return true;
-  ui.notifications.warn("TS-DJ-MUSIC: недостаточно прав модуля.");
+  notify("warn", "NoPermission", {}, "TS-DJ-MUSIC: insufficient module permissions.");
   return false;
 }
 
@@ -768,7 +914,7 @@ function injectPlaylistDirectoryButton(root) {
   const button = document.createElement("button");
   button.type = "button";
   button.dataset.action = `${MODULE_ID}-open`;
-  button.innerHTML = `<i class=\"fas fa-music\"></i> TS-DJ-MUSIC`;
+  button.innerHTML = `<i class=\"fas fa-music\"></i> ${escapeHtml(t("Sidebar.OpenButton", "TS-DJ-MUSIC"))}`;
   button.addEventListener("click", () => openApp());
   buttonContainer.appendChild(button);
 }
@@ -791,7 +937,7 @@ function injectPlaylistDirectoryRateControl(root) {
     <div class="global-volume global-control ${MODULE_ID}-sidebar-volume-control ${sidebarUiState.rateCollapsed ? "" : "expanded"}">
       <header class="playlist-header" data-action="volumeExpand">
         <i class="expand fa-solid fa-angle-up" inert></i>
-        <strong>TS-DJ Global Volume</strong>
+        <strong>${escapeHtml(t("Sidebar.GlobalVolume", "TS-DJ Global Volume"))}</strong>
       </header>
       <div class="expandable">
         <div class="wrapper">
@@ -875,7 +1021,7 @@ function injectPlaylistDirectoryRateControl(root) {
   };
 
   addControlRow({
-    labelText: "TS-DJ Speed",
+    labelText: t("App.LiveSpeed", "Speed (live)"),
     min: 0.5,
     max: 2,
     step: 0.25,
@@ -892,7 +1038,7 @@ function injectPlaylistDirectoryRateControl(root) {
   });
 
   addControlRow({
-    labelText: "Music",
+    labelText: t("Common.Music", "Music"),
     min: 0,
     max: 1,
     step: 0.05,
@@ -911,7 +1057,7 @@ function injectPlaylistDirectoryRateControl(root) {
   });
 
   addControlRow({
-    labelText: "Ambience",
+    labelText: t("Common.Ambience", "Ambience"),
     min: 0,
     max: 1,
     step: 0.05,
@@ -936,10 +1082,10 @@ function injectPlaylistDirectoryDjPanel(root) {
   const canManage = canManagePlaylistControls();
   const files = getFiles();
   const fileMap = new Map(files.map((entry) => [entry.id, entry]));
-  const tracks = getTracks();
-  const playlists = getPlaylists();
-  const ambienceTracks = getAmbienceTracks();
-  const ambiencePlaylists = getAmbiencePlaylists();
+  const tracks = sortEntriesByName(getTracks());
+  const playlists = sortEntriesByName(getPlaylists());
+  const ambienceTracks = sortEntriesByName(getAmbienceTracks());
+  const ambiencePlaylists = sortEntriesByName(getAmbiencePlaylists());
   const playlistsHtml = canManage ? buildSidebarPlaylistsHtml(playlists, tracks) : "";
   const tracksHtml = canManage ? buildSidebarTracksHtml(tracks, fileMap) : "";
   const ambiencePlaylistsHtml = canManage ? buildSidebarAmbiencePlaylistsHtml(ambiencePlaylists, ambienceTracks) : "";
@@ -960,10 +1106,10 @@ function injectPlaylistDirectoryDjPanel(root) {
       ? `
         <header class="playlist-header ${MODULE_ID}-sidebar-head" data-action="toggle-quick-panel">
           <i class="expand fa-solid fa-angle-up" inert></i>
-          <strong class="title">TS-DJ Playlists</strong>
+          <strong class="title">${escapeHtml(t("Sidebar.PanelTitle", "TS-DJ Playlists"))}</strong>
           <div class="actions">
-            <button type="button" data-action="open-manager" title="Open manager"><i class="fas fa-sliders-h"></i></button>
-            <button type="button" data-action="stop" title="Stop"><i class="fas fa-stop"></i></button>
+            <button type="button" data-action="open-manager" title="${escapeHtml(t("Common.OpenManager", "Open manager"))}"><i class="fas fa-sliders-h"></i></button>
+            <button type="button" data-action="stop" title="${escapeHtml(t("Common.Stop", "Stop"))}"><i class="fas fa-stop"></i></button>
           </div>
         </header>
         <div class="${MODULE_ID}-sidebar-now"></div>
@@ -971,23 +1117,23 @@ function injectPlaylistDirectoryDjPanel(root) {
           <div class="wrapper">
             <div class="${MODULE_ID}-sidebar-body">
               <div class="${MODULE_ID}-sidebar-queue-nav">
-                <button type="button" data-action="playlist-prev" title="Previous track in playlist"><i class="fas fa-step-backward"></i></button>
-                <button type="button" data-action="playlist-next" title="Next track in playlist"><i class="fas fa-step-forward"></i></button>
+                <button type="button" data-action="playlist-prev" title="${escapeHtml(t("Sidebar.PreviousTrack", "Previous track in playlist"))}"><i class="fas fa-step-backward"></i></button>
+                <button type="button" data-action="playlist-next" title="${escapeHtml(t("Sidebar.NextTrack", "Next track in playlist"))}"><i class="fas fa-step-forward"></i></button>
               </div>
               <details ${sidebarSectionState.playlists ? "open" : ""} data-section="playlists" class="${MODULE_ID}-sidebar-section">
-                <summary>Playlists</summary>
+                <summary>${escapeHtml(t("Common.Playlists", "Playlists"))}</summary>
                 <div class="${MODULE_ID}-sidebar-list"></div>
               </details>
               <details ${sidebarSectionState.music ? "open" : ""} data-section="music" class="${MODULE_ID}-sidebar-section">
-                <summary>Music</summary>
+                <summary>${escapeHtml(t("Common.Music", "Music"))}</summary>
                 <div class="${MODULE_ID}-sidebar-list"></div>
               </details>
               <details ${sidebarSectionState.ambiencePlaylists ? "open" : ""} data-section="ambiencePlaylists" class="${MODULE_ID}-sidebar-section">
-                <summary>Ambience Playlists</summary>
+                <summary>${escapeHtml(t("Common.AmbiencePlaylists", "Ambience Playlists"))}</summary>
                 <div class="${MODULE_ID}-sidebar-list"></div>
               </details>
               <details ${sidebarSectionState.ambience ? "open" : ""} data-section="ambience" class="${MODULE_ID}-sidebar-section">
-                <summary>Ambience</summary>
+                <summary>${escapeHtml(t("Common.Ambience", "Ambience"))}</summary>
                 <div class="${MODULE_ID}-sidebar-list"></div>
               </details>
             </div>
@@ -1171,7 +1317,7 @@ function injectPlaylistDirectoryNativePlaylistsPanel(root) {
     panel.innerHTML = `
       <header class="playlist-header" data-action="toggle-native-playlists-panel">
         <i class="expand fa-solid fa-angle-up" inert></i>
-        <strong>Foundry Playlists</strong>
+        <strong>${escapeHtml(t("Sidebar.FoundryPlaylists", "Foundry Playlists"))}</strong>
       </header>
       <div class="expandable">
         <div class="wrapper"></div>
@@ -1198,7 +1344,7 @@ function injectPlaylistDirectoryNativePlaylistsPanel(root) {
 }
 function buildSidebarPlaylistsHtml(playlists, tracks) {
   if (!playlists.length) {
-    return `<div class="${MODULE_ID}-sidebar-empty">Плейлистов пока нет</div>`;
+    return `<div class="${MODULE_ID}-sidebar-empty">${escapeHtml(t("Notes.NoPlaylistsYet", "No playlists yet."))}</div>`;
   }
 
   const trackMap = new Map(tracks.map((entry) => [entry.id, entry]));
@@ -1227,26 +1373,26 @@ function buildSidebarPlaylistsHtml(playlists, tracks) {
                 data-playlist-id="${playlist.id}"
                 data-track-id="${trackId}"
                 class="play-from-track"
-                title="Запустить плейлист с этого трека"
+                title="${escapeHtml(t("Common.PlayFromTrack", "Play playlist from this track"))}"
               ><i class="fas ${trackPlayIcon}"></i></button>
               <span class="index">${index + 1}.</span>
-              <span class="track-name">${escapeHtml(track?.name || "Без названия")}</span>
+              <span class="track-name">${escapeHtml(untitledName(track?.name))}</span>
             </div>
           `;
         }).join("")
-        : `<div class="${MODULE_ID}-sidebar-subrow is-empty">Треки отсутствуют</div>`;
+        : `<div class="${MODULE_ID}-sidebar-subrow is-empty">${escapeHtml(t("Notes.NoTracksAvailable", "No tracks available"))}</div>`;
       return `
         <div class="${MODULE_ID}-sidebar-playlist ${expanded ? "is-expanded" : ""}">
           <div class="${MODULE_ID}-sidebar-row ${active ? "is-active" : ""}">
             <div class="row-actions">
               <button type="button" data-action="${playAction}" data-id="${playlist.id}" class="play"><i class="fas ${playIcon}"></i></button>
-              <button type="button" data-action="toggle-playlist-loop" data-id="${playlist.id}" class="loop ${loopEnabled ? "is-on" : ""}" title="Loop"><i class="fas fa-repeat"></i></button>
-              <button type="button" data-action="toggle-playlist-shuffle" data-id="${playlist.id}" class="shuffle ${shuffleEnabled ? "is-on" : ""}" title="Shuffle"><i class="fas fa-random"></i></button>
-              <button type="button" data-action="toggle-sidebar-playlist-expand" data-id="${playlist.id}" class="expand ${expanded ? "is-on" : ""}" title="${expanded ? "Свернуть треки" : "Показать треки"}"><i class="fas ${expanded ? "fa-chevron-down" : "fa-chevron-right"}"></i></button>
+              <button type="button" data-action="toggle-playlist-loop" data-id="${playlist.id}" class="loop ${loopEnabled ? "is-on" : ""}" title="${escapeHtml(t("Common.Loop", "Loop"))}"><i class="fas fa-repeat"></i></button>
+              <button type="button" data-action="toggle-playlist-shuffle" data-id="${playlist.id}" class="shuffle ${shuffleEnabled ? "is-on" : ""}" title="${escapeHtml(t("Common.Shuffle", "Shuffle"))}"><i class="fas fa-random"></i></button>
+              <button type="button" data-action="toggle-sidebar-playlist-expand" data-id="${playlist.id}" class="expand ${expanded ? "is-on" : ""}" title="${escapeHtml(t(expanded ? "Common.HideTracks" : "Common.ShowTracks", expanded ? "Hide tracks" : "Show tracks"))}"><i class="fas ${expanded ? "fa-chevron-down" : "fa-chevron-right"}"></i></button>
             </div>
             <div class="meta">
-              <strong>${escapeHtml(playlist.name || "Без названия")}</strong>
-              <span>${count} tracks | loop: ${loopEnabled ? "Yes" : "No"} | shuffle: ${shuffleEnabled ? "Yes" : "No"}</span>
+              <strong>${escapeHtml(untitledName(playlist.name))}</strong>
+              <span>${escapeHtml(formatSidebarPlaylistMeta(count, loopEnabled, shuffleEnabled))}</span>
             </div>
           </div>
           <div class="${MODULE_ID}-sidebar-sublist ${expanded ? "is-open" : ""}">
@@ -1260,14 +1406,14 @@ function buildSidebarPlaylistsHtml(playlists, tracks) {
 
 function buildSidebarTracksHtml(tracks, fileMap) {
   if (!tracks.length) {
-    return `<div class="${MODULE_ID}-sidebar-empty">Треков пока нет</div>`;
+    return `<div class="${MODULE_ID}-sidebar-empty">${escapeHtml(t("Notes.NoTracksYet", "No tracks yet."))}</div>`;
   }
 
   const current = playbackState.current;
   return tracks
     .map((track) => {
       const active = current?.trackId === track.id;
-      const fileName = fileMap.get(track.fileId)?.name || "Файл?";
+      const fileName = fileMap.get(track.fileId)?.name || t("Common.FileMissingShort", "File?");
       const clip = `${track.start || "0"}-${track.end || "-"}`;
       const loopEnabled = Boolean(track.loop);
       const playAction = active ? (current?.paused ? "resume-current" : "pause-current") : "play-track";
@@ -1284,11 +1430,11 @@ function buildSidebarTracksHtml(tracks, fileMap) {
         <div class="${MODULE_ID}-sidebar-row ${active ? "is-active" : ""}">
           <div class="row-actions">
             <button type="button" data-action="${playAction}" data-id="${track.id}" class="play"><i class="fas ${playIcon}"></i></button>
-            <button type="button" data-action="toggle-track-loop" data-id="${track.id}" class="loop ${loopEnabled ? "is-on" : ""}" title="Loop"><i class="fas fa-repeat"></i></button>
+            <button type="button" data-action="toggle-track-loop" data-id="${track.id}" class="loop ${loopEnabled ? "is-on" : ""}" title="${escapeHtml(t("Common.Loop", "Loop"))}"><i class="fas fa-repeat"></i></button>
           </div>
           <div class="meta">
-            <strong>${escapeHtml(track.name || "Без названия")}</strong>
-            <span>${escapeHtml(fileName)} | ${escapeHtml(clip)} | loop: ${loopEnabled ? "on" : "off"}</span>
+            <strong>${escapeHtml(untitledName(track.name))}</strong>
+            <span>${escapeHtml(formatSidebarTrackMeta(fileName, clip, loopEnabled))}</span>
             ${progressRow}
           </div>
         </div>
@@ -1299,7 +1445,7 @@ function buildSidebarTracksHtml(tracks, fileMap) {
 
 function buildSidebarAmbiencePlaylistsHtml(playlists, tracks) {
   if (!playlists.length) {
-    return `<div class="${MODULE_ID}-sidebar-empty">No ambience playlists</div>`;
+    return `<div class="${MODULE_ID}-sidebar-empty">${escapeHtml(t("Notes.NoAmbiencePlaylistsYet", "No ambience playlists yet."))}</div>`;
   }
 
   const validTrackSet = new Set(tracks.map((entry) => entry.id));
@@ -1315,12 +1461,12 @@ function buildSidebarAmbiencePlaylistsHtml(playlists, tracks) {
         <div class="${MODULE_ID}-sidebar-row ${active ? "is-active" : ""}">
           <div class="row-actions">
             <button type="button" data-action="${playAction}" data-id="${playlist.id}" class="play"><i class="fas ${playIcon}"></i></button>
-            <button type="button" data-action="toggle-ambience-playlist-loop" data-id="${playlist.id}" class="loop ${loopEnabled ? "is-on" : ""}" title="Loop"><i class="fas fa-repeat"></i></button>
-            <button type="button" data-action="toggle-ambience-playlist-shuffle" data-id="${playlist.id}" class="shuffle ${shuffleEnabled ? "is-on" : ""}" title="Shuffle"><i class="fas fa-random"></i></button>
+            <button type="button" data-action="toggle-ambience-playlist-loop" data-id="${playlist.id}" class="loop ${loopEnabled ? "is-on" : ""}" title="${escapeHtml(t("Common.Loop", "Loop"))}"><i class="fas fa-repeat"></i></button>
+            <button type="button" data-action="toggle-ambience-playlist-shuffle" data-id="${playlist.id}" class="shuffle ${shuffleEnabled ? "is-on" : ""}" title="${escapeHtml(t("Common.Shuffle", "Shuffle"))}"><i class="fas fa-random"></i></button>
           </div>
           <div class="meta">
-            <strong>${escapeHtml(playlist.name || "No name")}</strong>
-            <span>${count} tracks | loop: ${loopEnabled ? "on" : "off"} | shuffle: ${shuffleEnabled ? "on" : "off"}</span>
+            <strong>${escapeHtml(untitledName(playlist.name))}</strong>
+            <span>${escapeHtml(formatSidebarPlaylistMeta(count, loopEnabled, shuffleEnabled))}</span>
           </div>
         </div>
       `;
@@ -1330,13 +1476,13 @@ function buildSidebarAmbiencePlaylistsHtml(playlists, tracks) {
 
 function buildSidebarAmbienceTracksHtml(tracks, fileMap) {
   if (!tracks.length) {
-    return `<div class="${MODULE_ID}-sidebar-empty">No ambience tracks</div>`;
+    return `<div class="${MODULE_ID}-sidebar-empty">${escapeHtml(t("Notes.NoAmbienceTracksYet", "No ambience tracks yet."))}</div>`;
   }
 
   return tracks
     .map((track) => {
       const active = isAmbienceTrackActive(track.id);
-      const fileName = fileMap.get(track.fileId)?.name || "File?";
+      const fileName = fileMap.get(track.fileId)?.name || t("Common.FileMissingShort", "File?");
       const clip = `${track.start || "0"}-${track.end || "-"}`;
       const loopEnabled = Boolean(track.loop);
       return `
@@ -1345,11 +1491,11 @@ function buildSidebarAmbienceTracksHtml(tracks, fileMap) {
             <button type="button" data-action="${active ? "stop-ambience" : "play-ambience"}" data-id="${track.id}" class="play">
               <i class="fas ${active ? "fa-stop" : "fa-play"}"></i>
             </button>
-            <button type="button" data-action="toggle-ambience-track-loop" data-id="${track.id}" class="loop ${loopEnabled ? "is-on" : ""}" title="Loop"><i class="fas fa-repeat"></i></button>
+            <button type="button" data-action="toggle-ambience-track-loop" data-id="${track.id}" class="loop ${loopEnabled ? "is-on" : ""}" title="${escapeHtml(t("Common.Loop", "Loop"))}"><i class="fas fa-repeat"></i></button>
           </div>
           <div class="meta">
-            <strong>${escapeHtml(track.name || "No name")}</strong>
-            <span>${escapeHtml(fileName)} | ${escapeHtml(clip)} | loop: ${loopEnabled ? "on" : "off"}</span>
+            <strong>${escapeHtml(untitledName(track.name))}</strong>
+            <span>${escapeHtml(formatSidebarTrackMeta(fileName, clip, loopEnabled))}</span>
           </div>
         </div>
       `;
@@ -1358,28 +1504,55 @@ function buildSidebarAmbienceTracksHtml(tracks, fileMap) {
 }
 
 function getCurrentPlaybackLabelForSidebar(tracks, playlists) {
-  if (!playbackState.current) return "Остановлено";
+  if (!playbackState.current) return t("Sidebar.Stopped", "Stopped");
 
-  const pausedMark = playbackState.current.paused ? " [paused]" : "";
+  const pausedMark = playbackState.current.paused ? t("Status.PausedMark", " [paused]") : "";
   const currentTrack = tracks.find((track) => track.id === playbackState.current.trackId);
   if (playbackState.current.mode === "playlist") {
     const playlist = playlists.find((entry) => entry.id === playbackState.current.playlistId);
-    return `Играет плейлист: ${playlist?.name ?? "?"} | ${currentTrack?.name ?? "?"}${pausedMark}`;
+    return tf("Sidebar.NowPlayingPlaylist", {
+      playlist: playlist?.name ?? "?",
+      track: currentTrack?.name ?? "?",
+      paused: pausedMark,
+    }, ({ playlist: currentPlaylist, track, paused }) => `Playing playlist: ${currentPlaylist} | ${track}${paused}`);
   }
 
-  return `Играет трек: ${currentTrack?.name ?? "?"}${pausedMark}`;
+  return tf("Sidebar.NowPlayingTrack", {
+    track: currentTrack?.name ?? "?",
+    paused: pausedMark,
+  }, ({ track, paused }) => `Playing track: ${track}${paused}`);
 }
 
 function getCurrentPlaybackLabelForManager(tracks, playlists) {
-  if (!playbackState.current) return "Остановлено";
+  if (!playbackState.current) return t("Status.Stopped", "Stopped");
 
   const currentTrack = tracks.find((track) => track.id === playbackState.current.trackId);
   if (playbackState.current.mode === "playlist") {
     const playlist = playlists.find((entry) => entry.id === playbackState.current.playlistId);
-    return `Плейлист: ${playlist?.name ?? "?"} | Трек: ${currentTrack?.name ?? "?"}`;
+    return tf("Status.ManagerPlaylist", {
+      playlist: playlist?.name ?? "?",
+      track: currentTrack?.name ?? "?",
+    }, ({ playlist: currentPlaylist, track }) => `Playlist: ${currentPlaylist} | Track: ${track}`);
   }
 
-  return `Трек: ${currentTrack?.name ?? "?"}`;
+  return tf("Status.ManagerTrack", { track: currentTrack?.name ?? "?" }, ({ track }) => `Track: ${track}`);
+}
+
+function getManagerCardTemplateState() {
+  return {
+    musicPlaylists: {
+      expanded: Boolean(managerCardExpandState.musicPlaylists),
+    },
+    musicTracks: {
+      expanded: Boolean(managerCardExpandState.musicTracks),
+    },
+    ambiencePlaylists: {
+      expanded: Boolean(managerCardExpandState.ambiencePlaylists),
+    },
+    ambienceTracks: {
+      expanded: Boolean(managerCardExpandState.ambienceTracks),
+    },
+  };
 }
 
 function refreshManagerRuntimeUi() {
@@ -1402,8 +1575,11 @@ function refreshManagerRuntimeUi() {
       if (!stopButton) {
         stopButton = document.createElement("button");
         stopButton.type = "button";
+        stopButton.className = "ts-dj-icon-button";
         stopButton.dataset.action = "stop";
-        stopButton.innerHTML = "<i class=\"fas fa-stop\"></i> Stop";
+        stopButton.title = t("Common.Stop", "Stop");
+        stopButton.setAttribute("aria-label", t("Common.Stop", "Stop"));
+        stopButton.innerHTML = "<i class=\"fas fa-stop\"></i>";
         status.appendChild(stopButton);
       }
     } else if (stopButton) {
@@ -1812,6 +1988,119 @@ function stopAmbienceEnvironmentVolumeWatcher() {
   ambienceEnvironmentVolumeTicker = null;
 }
 
+function sortEntriesByName(entries) {
+  return [...entries].sort((left, right) => {
+    const byName = NAME_SORT_COLLATOR.compare(
+      String(left?.name ?? "").trim(),
+      String(right?.name ?? "").trim(),
+    );
+    if (byName !== 0) return byName;
+    return NAME_SORT_COLLATOR.compare(String(left?.id ?? ""), String(right?.id ?? ""));
+  });
+}
+
+function getPlaylistTrackEditorName(track) {
+  return untitledName(track?.name);
+}
+
+function getPlaylistTracksForEditor(tracks, selectedTrackIds = []) {
+  const normalizedTracks = tracks.map((track) => ({
+    ...track,
+    name: getPlaylistTrackEditorName(track),
+  }));
+  const sortedTracks = sortEntriesByName(normalizedTracks);
+  if (!selectedTrackIds.length) return sortedTracks;
+
+  const selectedSet = new Set(selectedTrackIds);
+  const trackMap = new Map(sortedTracks.map((track) => [track.id, track]));
+  const selectedTracks = selectedTrackIds
+    .map((trackId) => trackMap.get(trackId))
+    .filter(Boolean);
+  const unselectedTracks = sortedTracks.filter((track) => !selectedSet.has(track.id));
+  return [...selectedTracks, ...unselectedTracks];
+}
+
+function syncPlaylistTrackOrderInput(form) {
+  if (!(form instanceof HTMLFormElement)) return;
+  const orderInput = form.querySelector("input[name='trackOrder']");
+  if (!(orderInput instanceof HTMLInputElement)) return;
+
+  const orderedSelectedTrackIds = [...form.querySelectorAll("[data-track-row]")]
+    .filter((row) => {
+      const checkbox = row.querySelector("input[name='trackIds']");
+      return checkbox instanceof HTMLInputElement && checkbox.checked;
+    })
+    .map((row) => row.dataset.trackId)
+    .filter((trackId) => trackId);
+
+  orderInput.value = orderedSelectedTrackIds.join(",");
+}
+
+function initPlaylistTrackPicker(form) {
+  if (!(form instanceof HTMLFormElement)) return;
+  const list = form.querySelector("[data-playlist-track-picker]");
+  if (!(list instanceof HTMLElement)) {
+    syncPlaylistTrackOrderInput(form);
+    return;
+  }
+
+  const updateCheckedState = (row) => {
+    const checkbox = row?.querySelector("input[name='trackIds']");
+    if (!(checkbox instanceof HTMLInputElement)) return;
+    row.classList.toggle("is-checked", checkbox.checked);
+  };
+
+  list.querySelectorAll("[data-track-row]").forEach((row) => {
+    updateCheckedState(row);
+  });
+  syncPlaylistTrackOrderInput(form);
+
+  let draggedRow = null;
+
+  list.addEventListener("change", (event) => {
+    const checkbox = event.target.closest("input[name='trackIds']");
+    if (!(checkbox instanceof HTMLInputElement)) return;
+    const row = checkbox.closest("[data-track-row]");
+    if (row instanceof HTMLElement) updateCheckedState(row);
+    syncPlaylistTrackOrderInput(form);
+  });
+
+  list.querySelectorAll("[data-track-row]").forEach((row) => {
+    row.addEventListener("dragstart", (event) => {
+      draggedRow = row;
+      row.classList.add("is-dragging");
+      event.dataTransfer?.setData("text/plain", row.dataset.trackId ?? "");
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+    });
+
+    row.addEventListener("dragend", () => {
+      row.classList.remove("is-dragging");
+      draggedRow = null;
+      syncPlaylistTrackOrderInput(form);
+    });
+  });
+
+  list.addEventListener("dragover", (event) => {
+    if (!(draggedRow instanceof HTMLElement)) return;
+    event.preventDefault();
+
+    const targetRow = event.target.closest("[data-track-row]");
+    if (!(targetRow instanceof HTMLElement) || targetRow === draggedRow) return;
+
+    const bounds = targetRow.getBoundingClientRect();
+    const shouldInsertAfter = (event.clientY - bounds.top) > (bounds.height / 2);
+    const nextNode = shouldInsertAfter ? targetRow.nextElementSibling : targetRow;
+    if (nextNode === draggedRow) return;
+    list.insertBefore(draggedRow, nextNode);
+  });
+
+  list.addEventListener("drop", (event) => {
+    if (!(draggedRow instanceof HTMLElement)) return;
+    event.preventDefault();
+    syncPlaylistTrackOrderInput(form);
+  });
+}
+
 function getFiles() {
   return normalizeArray(storageState.files);
 }
@@ -1836,12 +2125,9 @@ function getAmbienceAllowConcurrent() {
   return Boolean(storageState.ambienceAllowConcurrent);
 }
 
-async function setStorageValue(key, value) {
-  if (!(key in storageState)) {
-    throw new Error(`TS-DJ-MUSIC: invalid storage key "${key}"`);
-  }
+async function setStorageData(nextData) {
   if (!canManagePlaylistControls()) {
-    ui.notifications.warn("TS-DJ-MUSIC: недостаточно прав модуля.");
+    notify("warn", "NoPermission", {}, "TS-DJ-MUSIC: insufficient module permissions.");
     throw new Error("TS-DJ-MUSIC: user is not allowed to manage this module");
   }
 
@@ -1849,14 +2135,26 @@ async function setStorageValue(key, value) {
     if (!storageLoaded) {
       await initializeStorageState();
     }
-    storageState[key] = value;
+    applyStorageData(nextData);
     await persistStorageState();
   } catch (error) {
-    console.warn(`${MODULE_ID} | failed to update storage key "${key}"`, error);
-    ui.notifications.error("TS-DJ-MUSIC: не удалось применить изменения в Playlist-хранилище.");
+    console.warn(`${MODULE_ID} | failed to replace storage data`, error);
+    notify("error", "StorageApplyFailed", {}, "TS-DJ-MUSIC: failed to apply changes to playlist storage.");
     throw error;
   }
   refreshPlaylistDirectoryUi();
+}
+
+async function setStorageValue(key, value) {
+  if (!(key in storageState)) {
+    throw new Error(`TS-DJ-MUSIC: invalid storage key "${key}"`);
+  }
+  if (!storageLoaded) {
+    await initializeStorageState();
+  }
+  const nextData = cloneStorageData();
+  nextData[key] = value;
+  await setStorageData(nextData);
 }
 
 async function setFiles(files) {
@@ -1881,6 +2179,176 @@ async function setAmbiencePlaylists(playlists) {
 
 async function setAmbienceAllowConcurrent(enabled) {
   await setStorageValue("ambienceAllowConcurrent", Boolean(enabled));
+}
+
+function countPlaylistTracks(playlist, validTrackIds) {
+  const ids = normalizeArray(playlist?.trackIds);
+  if (!(validTrackIds instanceof Set)) return ids.length;
+  return ids.filter((id) => validTrackIds.has(id)).length;
+}
+
+function reorderTrackIds(trackIds, movedTrackId, targetTrackId, insertAfter = false) {
+  const orderedIds = normalizeArray(trackIds);
+  const fromIndex = orderedIds.indexOf(movedTrackId);
+  const targetIndex = orderedIds.indexOf(targetTrackId);
+  if (fromIndex === -1 || targetIndex === -1 || fromIndex === targetIndex) return orderedIds;
+
+  const [movedTrack] = orderedIds.splice(fromIndex, 1);
+  let insertIndex = targetIndex;
+  if (fromIndex < targetIndex) insertIndex -= 1;
+  if (insertAfter) insertIndex += 1;
+  orderedIds.splice(clampNumber(insertIndex, 0, orderedIds.length), 0, movedTrack);
+  return orderedIds;
+}
+
+function applyVisibleTrackOrder(trackIds, orderedVisibleTrackIds) {
+  const orderedIds = normalizeArray(trackIds);
+  const visibleIds = normalizeArray(orderedVisibleTrackIds);
+  if (!orderedIds.length || !visibleIds.length) return orderedIds;
+
+  const visibleSet = new Set(visibleIds);
+  const nextVisibleIds = [...visibleIds];
+  return orderedIds.map((trackId) => (visibleSet.has(trackId) ? nextVisibleIds.shift() ?? trackId : trackId));
+}
+
+function collectNewlyEmptyPlaylists({ previousPlaylists = [], nextPlaylists = [], previousTrackIds = [], nextTrackIds = [] } = {}) {
+  const previousValidTrackIds = new Set(normalizeArray(previousTrackIds));
+  const nextValidTrackIds = new Set(normalizeArray(nextTrackIds));
+  const nextPlaylistMap = new Map(normalizeArray(nextPlaylists).map((playlist) => [playlist.id, playlist]));
+
+  return normalizeArray(previousPlaylists).filter((playlist) => {
+    const previousCount = countPlaylistTracks(playlist, previousValidTrackIds);
+    if (previousCount <= 0) return false;
+
+    const nextPlaylist = nextPlaylistMap.get(playlist.id) ?? playlist;
+    const nextCount = countPlaylistTracks(nextPlaylist, nextValidTrackIds);
+    return nextCount === 0;
+  });
+}
+
+function normalizeDialogSelection(value) {
+  if (Array.isArray(value)) return value.map((entry) => String(entry));
+  if (value === null || value === undefined || value === "") return [];
+  return [String(value)];
+}
+
+async function promptEmptyPlaylistCleanup({ musicPlaylists = [], ambiencePlaylists = [] } = {}) {
+  const music = normalizeArray(musicPlaylists);
+  const ambience = normalizeArray(ambiencePlaylists);
+  if (!music.length && !ambience.length) {
+    return {
+      musicPlaylistIds: [],
+      ambiencePlaylistIds: [],
+    };
+  }
+
+  const renderPlaylistOptions = (playlists, fieldName) => playlists.map((playlist) => `
+    <label class="checkbox">
+      <input type="checkbox" name="${fieldName}" value="${escapeHtml(playlist.id)}" checked>
+      <span>${escapeHtml(untitledName(playlist.name))}</span>
+    </label>
+  `).join("");
+
+  const content = `
+    <form class="standard-form ts-dj-dialog-form">
+      <p>${escapeHtml(t("Dialogs.EmptyCleanupDescription", "These playlists no longer contain any music. Select which ones should be deleted."))}</p>
+      ${music.length ? `
+        <div class="form-group stacked">
+          <label>${escapeHtml(t("Dialogs.MusicPlaylistsLabel", "Music playlists"))}</label>
+          <div class="form-fields">
+            ${renderPlaylistOptions(music, "musicPlaylistIds")}
+          </div>
+        </div>
+      ` : ""}
+      ${ambience.length ? `
+        <div class="form-group stacked">
+          <label>${escapeHtml(t("Common.AmbiencePlaylists", "Ambience Playlists"))}</label>
+          <div class="form-fields">
+            ${renderPlaylistOptions(ambience, "ambiencePlaylistIds")}
+          </div>
+        </div>
+      ` : ""}
+    </form>
+  `;
+
+  const result = await promptDialog(t("Dialogs.EmptyCleanupTitle", "Delete empty playlists"), content, {
+    confirmLabel: t("Dialogs.DeleteSelected", "Delete selected"),
+    confirmIcon: "fa-trash",
+  });
+
+  if (!result) {
+    return {
+      musicPlaylistIds: [],
+      ambiencePlaylistIds: [],
+    };
+  }
+
+  return {
+    musicPlaylistIds: normalizeDialogSelection(result.musicPlaylistIds),
+    ambiencePlaylistIds: normalizeDialogSelection(result.ambiencePlaylistIds),
+  };
+}
+
+async function maybeRemoveEmptyPlaylists({
+  musicPreviousPlaylists = [],
+  musicNextPlaylists = [],
+  musicPreviousTrackIds = [],
+  musicNextTrackIds = [],
+  ambiencePreviousPlaylists = [],
+  ambienceNextPlaylists = [],
+  ambiencePreviousTrackIds = [],
+  ambienceNextTrackIds = [],
+} = {}) {
+  const emptyMusicPlaylists = collectNewlyEmptyPlaylists({
+    previousPlaylists: musicPreviousPlaylists,
+    nextPlaylists: musicNextPlaylists,
+    previousTrackIds: musicPreviousTrackIds,
+    nextTrackIds: musicNextTrackIds,
+  });
+  const emptyAmbiencePlaylists = collectNewlyEmptyPlaylists({
+    previousPlaylists: ambiencePreviousPlaylists,
+    nextPlaylists: ambienceNextPlaylists,
+    previousTrackIds: ambiencePreviousTrackIds,
+    nextTrackIds: ambienceNextTrackIds,
+  });
+
+  if (!emptyMusicPlaylists.length && !emptyAmbiencePlaylists.length) {
+    return {
+      musicPlaylists: normalizeArray(musicNextPlaylists),
+      ambiencePlaylists: normalizeArray(ambienceNextPlaylists),
+      deletedMusicPlaylistIds: [],
+      deletedAmbiencePlaylistIds: [],
+    };
+  }
+
+  const selected = await promptEmptyPlaylistCleanup({
+    musicPlaylists: emptyMusicPlaylists,
+    ambiencePlaylists: emptyAmbiencePlaylists,
+  });
+  const deletedMusicPlaylistIds = normalizeDialogSelection(selected.musicPlaylistIds);
+  const deletedAmbiencePlaylistIds = normalizeDialogSelection(selected.ambiencePlaylistIds);
+  const deletedMusicIdSet = new Set(deletedMusicPlaylistIds);
+  const deletedAmbienceIdSet = new Set(deletedAmbiencePlaylistIds);
+
+  return {
+    musicPlaylists: normalizeArray(musicNextPlaylists).filter((playlist) => !deletedMusicIdSet.has(String(playlist.id))),
+    ambiencePlaylists: normalizeArray(ambienceNextPlaylists).filter((playlist) => !deletedAmbienceIdSet.has(String(playlist.id))),
+    deletedMusicPlaylistIds,
+    deletedAmbiencePlaylistIds,
+  };
+}
+
+async function stopDeletedPlaylistPlayback({ deletedMusicPlaylistIds = [], deletedAmbiencePlaylistIds = [] } = {}) {
+  const deletedMusicIdSet = new Set(normalizeDialogSelection(deletedMusicPlaylistIds));
+  const deletedAmbienceIdSet = new Set(normalizeDialogSelection(deletedAmbiencePlaylistIds));
+
+  if (playbackState.current?.mode === "playlist" && deletedMusicIdSet.has(String(playbackState.current.playlistId ?? ""))) {
+    await stopPlayback();
+  }
+
+  for (const playlistId of deletedAmbienceIdSet) {
+    await stopAmbienceByPlaylistId(playlistId);
+  }
 }
 
 async function togglePlaylistLoop(playlistId) {
@@ -2105,9 +2573,33 @@ function refreshLiveControlsUi() {
   }
 }
 
+async function resetModuleSettingsToDefaults() {
+  if (!ensureModuleControlAccess()) return false;
+
+  const confirmed = await Dialog.confirm({
+    title: t("Dialogs.ResetSettingsTitle", "Reset settings"),
+    content: t("Dialogs.ResetSettingsContent", "<p>Reset TS-DJ-MUSIC settings and delete all files, tracks, and playlists?</p>"),
+  });
+  if (!confirmed) return false;
+
+  await stopPlayback();
+  await stopAllAmbience();
+  await setStorageData(defaultStorageData());
+  await setLiveRate(DEFAULT_CLIENT_SETTINGS.liveRate, { apply: true });
+  await setLiveMusicVolume(DEFAULT_CLIENT_SETTINGS.liveMusicVolume, { apply: true });
+  await setLiveAmbienceVolume(DEFAULT_CLIENT_SETTINGS.liveAmbienceVolume, { apply: true });
+  await game.settings.set(MODULE_ID, SETTING_KEYS.collapseGlobalVolumeByDefault, DEFAULT_CLIENT_SETTINGS.collapseGlobalVolumeByDefault);
+  await game.settings.set(MODULE_ID, SETTING_KEYS.collapseTsDjPlaylistsByDefault, DEFAULT_CLIENT_SETTINGS.collapseTsDjPlaylistsByDefault);
+  await game.settings.set(MODULE_ID, SETTING_KEYS.collapseFoundryPlaylistsByDefault, DEFAULT_CLIENT_SETTINGS.collapseFoundryPlaylistsByDefault);
+  sidebarUiState.defaultsLoaded = false;
+  refreshPlaylistDirectoryUi();
+  notify("info", "SettingsReset", {}, "TS-DJ-MUSIC: settings reset.");
+  return true;
+}
+
 function openApp() {
   if (!canManagePlaylistControls()) {
-    ui.notifications.warn("TS-DJ-MUSIC: недостаточно прав модуля.");
+    notify("warn", "NoPermission", {}, "TS-DJ-MUSIC: insufficient module permissions.");
     return null;
   }
 
@@ -2127,7 +2619,7 @@ async function playTrackById(trackId, options = {}) {
   const tracks = getTracks();
   const track = tracks.find((entry) => entry.id === trackId);
   if (!track) {
-    ui.notifications.warn("TS-DJ-MUSIC: трек не найден");
+    notify("warn", "TrackNotFound", {}, "TS-DJ-MUSIC: track not found.");
     return;
   }
 
@@ -2154,7 +2646,7 @@ async function playPlaylistById(playlistId, options = {}) {
   const playlists = getPlaylists();
   const playlist = playlists.find((entry) => entry.id === playlistId);
   if (!playlist) {
-    ui.notifications.warn("TS-DJ-MUSIC: плейлист не найден");
+    notify("warn", "PlaylistNotFound", {}, "TS-DJ-MUSIC: playlist not found.");
     return;
   }
 
@@ -2169,7 +2661,7 @@ async function playPlaylistById(playlistId, options = {}) {
     ? overrideQueue
     : (shuffleEnabled ? shuffledArray(playlistQueue) : [...playlistQueue]);
   if (!queue.length) {
-    ui.notifications.warn("TS-DJ-MUSIC: в плейлисте нет треков");
+    notify("warn", "PlaylistEmpty", {}, "TS-DJ-MUSIC: the playlist has no tracks.");
     return;
   }
 
@@ -2263,7 +2755,7 @@ async function playAmbienceById(trackId, options = {}) {
   const tracks = getAmbienceTracks();
   const track = tracks.find((entry) => entry.id === trackId);
   if (!track) {
-    ui.notifications.warn("TS-DJ-MUSIC: ambience track not found");
+    notify("warn", "AmbienceTrackNotFound", {}, "TS-DJ-MUSIC: ambience track not found.");
     return;
   }
   const started = await playAmbienceTrack(track, playOptions);
@@ -2281,6 +2773,7 @@ async function playAmbiencePlaylistById(playlistId, options = {}) {
     sync = true,
     queue: queueOverride,
     index: indexOverride,
+    startTrackId = null,
     playlistLoop: playlistLoopOverride,
     playlistShuffle: playlistShuffleOverride,
   } = options;
@@ -2288,7 +2781,7 @@ async function playAmbiencePlaylistById(playlistId, options = {}) {
   const playlists = getAmbiencePlaylists();
   const playlist = playlists.find((entry) => entry.id === playlistId);
   if (!playlist) {
-    ui.notifications.warn("TS-DJ-MUSIC: ambience playlist not found");
+    notify("warn", "AmbiencePlaylistNotFound", {}, "TS-DJ-MUSIC: ambience playlist not found.");
     return;
   }
 
@@ -2303,13 +2796,14 @@ async function playAmbiencePlaylistById(playlistId, options = {}) {
     ? overrideQueue
     : (shuffleEnabled ? shuffledArray(playlistQueue) : [...playlistQueue]);
   if (!queue.length) {
-    ui.notifications.warn("TS-DJ-MUSIC: ambience playlist is empty");
+    notify("warn", "AmbiencePlaylistEmpty", {}, "TS-DJ-MUSIC: ambience playlist is empty.");
     return;
   }
 
+  const canStartFromTrack = typeof startTrackId === "string" && queue.includes(startTrackId);
   const index = Number.isFinite(indexOverride)
     ? clampNumber(Math.trunc(Number(indexOverride)), 0, queue.length - 1)
-    : 0;
+    : (canStartFromTrack ? queue.indexOf(startTrackId) : 0);
   const firstTrack = trackMap.get(queue[index]);
   const playlistLoop = typeof playlistLoopOverride === "boolean"
     ? playlistLoopOverride
@@ -2356,7 +2850,7 @@ async function playTrack(track, options = {}) {
   const files = getFiles();
   const file = files.find((entry) => entry.id === track.fileId);
   if (!file?.path) {
-    ui.notifications.warn("TS-DJ-MUSIC: для трека не указан файл");
+    notify("warn", "TrackFileMissing", {}, "TS-DJ-MUSIC: no file is set for this track.");
     return false;
   }
 
@@ -2390,7 +2884,7 @@ async function playTrack(track, options = {}) {
   }
   if (!sound) {
     playbackState.loading = false;
-    ui.notifications.error(`TS-DJ-MUSIC: не удалось загрузить файл ${file.path}`);
+    notify("error", "FileLoadFailed", { path: file.path }, ({ path }) => `TS-DJ-MUSIC: failed to load file ${path}.`);
     return false;
   }
 
@@ -2427,7 +2921,7 @@ async function playTrack(track, options = {}) {
     }
     playbackState.loading = false;
     console.warn(`${MODULE_ID} | failed to switch track`, error);
-    ui.notifications.warn("TS-DJ-MUSIC: playback blocked on this client. Click inside Foundry tab and try again.");
+    ui.notifications.warn(t("Notifications.PlaybackBlocked", "TS-DJ-MUSIC: playback blocked on this client. Click inside Foundry tab and try again."));
     return false;
   }
 
@@ -2496,7 +2990,7 @@ async function playAmbienceTrack(track, options = {}) {
   const files = getFiles();
   const file = files.find((entry) => entry.id === track.fileId);
   if (!file?.path) {
-    ui.notifications.warn("TS-DJ-MUSIC: ambience file is missing");
+    ui.notifications.warn(t("Notifications.AmbienceFileMissing", "TS-DJ-MUSIC: ambience file is missing."));
     return false;
   }
 
@@ -2533,7 +3027,7 @@ async function playAmbienceTrack(track, options = {}) {
   }
   if (!sound) {
     ambienceState.pending.delete(requestId);
-    ui.notifications.error(`TS-DJ-MUSIC: failed to load ambience ${file.path}`);
+    ui.notifications.error(tf("Notifications.AmbienceLoadFailed", { path: file.path }, ({ path }) => `TS-DJ-MUSIC: failed to load ambience ${path}.`));
     return false;
   }
 
@@ -2568,7 +3062,7 @@ async function playAmbienceTrack(track, options = {}) {
       return false;
     }
     console.warn(`${MODULE_ID} | failed to switch ambience`, error);
-    ui.notifications.warn("TS-DJ-MUSIC: ambience playback blocked on this client. Click inside Foundry tab and try again.");
+    ui.notifications.warn(t("Notifications.AmbiencePlaybackBlocked", "TS-DJ-MUSIC: ambience playback blocked on this client. Click inside Foundry tab and try again."));
     return false;
   }
 
@@ -2966,7 +3460,7 @@ class TsDjMusicApp extends Application {
     return foundry.utils.mergeObject(super.defaultOptions, {
       id: "ts-dj-music-app",
       template: "modules/ts-dj-music/templates/dj-app.hbs",
-      title: "TS-DJ-MUSIC",
+      title: t("App.WindowTitle", "TS-DJ-MUSIC"),
       width: 980,
       height: 760,
       resizable: true,
@@ -2976,26 +3470,26 @@ class TsDjMusicApp extends Application {
 
   getData() {
     const current = playbackState.current;
-    const files = getFiles().map((file) => {
+    const files = sortEntriesByName(getFiles().map((file) => {
       const rawPath = String(file.path ?? "");
       const displayPath = decodePathForDisplay(rawPath);
       return {
         ...file,
-        name: file.name || file.path || "Без имени",
+        name: file.name || file.path || t("Common.UntitledFile", "Unnamed file"),
         path: displayPath || rawPath,
       };
-    });
+    }));
 
     const fileMap = new Map(files.map((file) => [file.id, file]));
 
-    const tracks = getTracks().map((track) => {
+    const tracks = sortEntriesByName(getTracks().map((track) => {
       const file = fileMap.get(track.fileId);
       const active = current?.trackId === track.id;
       const paused = active && Boolean(current?.paused);
       return {
         ...track,
-        name: track.name || "Без названия",
-        fileName: file?.name || "Файл не найден",
+        name: untitledName(track.name),
+        fileName: file?.name || t("Common.FileMissingShort", "File?"),
         startLabel: track.start || "0",
         endLabel: track.end || "-",
         rateLabel: `${formatRate(Number(track.rate ?? 1))}x`,
@@ -3004,42 +3498,63 @@ class TsDjMusicApp extends Application {
         playAction: active ? (paused ? "resume-current" : "pause-current") : "play-track",
         playIcon: active && !paused ? "fa-pause" : "fa-play",
       };
-    });
+    }));
 
     const trackMap = new Map(tracks.map((track) => [track.id, track]));
 
-    const playlists = getPlaylists().map((playlist) => {
+    const playlists = sortEntriesByName(getPlaylists().map((playlist) => {
       const trackIds = normalizeArray(playlist.trackIds);
       const validTrackIds = trackIds.filter((id) => trackMap.has(id));
       const trackNames = validTrackIds
         .map((id) => trackMap.get(id)?.name)
         .filter(Boolean)
         .join(", ");
+      const active = current?.mode === "playlist" && current?.playlistId === playlist.id;
+      const paused = active && Boolean(current?.paused);
+      const expanded = Boolean(managerPlaylistExpandState[playlist.id]);
+      const trackEntries = validTrackIds.map((id, index) => {
+        const track = trackMap.get(id);
+        const trackActive = active && current?.trackId === id;
+        return {
+          id,
+          playlistId: playlist.id,
+          index: index + 1,
+          name: untitledName(track?.name),
+          active: trackActive,
+          playAction: trackActive ? (paused ? "resume-current" : "pause-current") : "play-playlist-from-track",
+          playIcon: trackActive && !paused ? "fa-pause" : "fa-play",
+        };
+      });
 
       return {
         ...playlist,
-        name: playlist.name || "Без названия",
+        name: untitledName(playlist.name),
         trackCount: validTrackIds.length,
-        trackNames: trackNames || "Пусто",
+        trackNames: trackNames || t("Common.Empty", "Empty"),
+        trackEntries,
         loop: Boolean(playlist.loop),
         shuffle: Boolean(playlist.shuffle),
-        active: current?.mode === "playlist" && current?.playlistId === playlist.id,
-        playAction: (current?.mode === "playlist" && current?.playlistId === playlist.id)
-          ? (current?.paused ? "resume-current" : "pause-current")
+        active,
+        expanded,
+        expandAction: "toggle-manager-playlist-expand",
+        expandTitle: t(expanded ? "Common.HideTracks" : "Common.ShowTracks", expanded ? "Hide tracks" : "Show tracks"),
+        expandIcon: expanded ? "fa-chevron-down" : "fa-chevron-right",
+        playAction: active
+          ? (paused ? "resume-current" : "pause-current")
           : "play-playlist",
-        playIcon: (current?.mode === "playlist" && current?.playlistId === playlist.id) && !current?.paused
+        playIcon: active && !paused
           ? "fa-pause"
           : "fa-play",
       };
-    });
+    }));
 
-    const ambienceTracks = getAmbienceTracks().map((track) => {
+    const ambienceTracks = sortEntriesByName(getAmbienceTracks().map((track) => {
       const file = fileMap.get(track.fileId);
       const active = isAmbienceTrackActive(track.id);
       return {
         ...track,
-        name: track.name || "No name",
-        fileName: file?.name || "File not found",
+        name: untitledName(track.name),
+        fileName: file?.name || t("Common.FileMissingShort", "File?"),
         startLabel: track.start || "0",
         endLabel: track.end || "-",
         rateLabel: `${formatRate(Number(track.rate ?? 1))}x`,
@@ -3048,26 +3563,50 @@ class TsDjMusicApp extends Application {
         playAction: active ? "stop-ambience-track" : "play-ambience-track",
         playIcon: active ? "fa-stop" : "fa-play",
       };
-    });
+    }));
 
     const ambienceTrackMap = new Map(ambienceTracks.map((track) => [track.id, track]));
-    const ambiencePlaylists = getAmbiencePlaylists().map((playlist) => {
+    const ambiencePlaylists = sortEntriesByName(getAmbiencePlaylists().map((playlist) => {
       const active = isAmbiencePlaylistActive(playlist.id);
       const trackIds = normalizeArray(playlist.trackIds);
       const validTrackIds = trackIds.filter((id) => ambienceTrackMap.has(id));
       const trackNames = validTrackIds.map((id) => ambienceTrackMap.get(id)?.name).filter(Boolean).join(", ");
+      const expanded = Boolean(managerAmbiencePlaylistExpandState[playlist.id]);
+      const activeTrackIds = new Set(
+        Array.from(ambienceState.active.values())
+          .filter((entry) => entry.mode === "playlist" && entry.playlistId === playlist.id && !entry.paused)
+          .map((entry) => entry.trackId)
+      );
+      const trackEntries = validTrackIds.map((id, index) => {
+        const track = ambienceTrackMap.get(id);
+        const trackActive = activeTrackIds.has(id);
+        return {
+          id,
+          playlistId: playlist.id,
+          index: index + 1,
+          name: untitledName(track?.name),
+          active: trackActive,
+          playAction: trackActive ? "stop-ambience-track" : "play-ambience-playlist-from-track",
+          playIcon: trackActive ? "fa-stop" : "fa-play",
+        };
+      });
       return {
         ...playlist,
-        name: playlist.name || "No name",
+        name: untitledName(playlist.name),
         trackCount: validTrackIds.length,
-        trackNames: trackNames || "Empty",
+        trackNames: trackNames || t("Common.Empty", "Empty"),
+        trackEntries,
         loop: Boolean(playlist.loop),
         shuffle: Boolean(playlist.shuffle),
         active,
+        expanded,
+        expandAction: "toggle-manager-ambience-playlist-expand",
+        expandTitle: t(expanded ? "Common.HideTracks" : "Common.ShowTracks", expanded ? "Hide tracks" : "Show tracks"),
+        expandIcon: expanded ? "fa-chevron-down" : "fa-chevron-right",
         playAction: active ? "stop-ambience-playlist" : "play-ambience-playlist",
         playIcon: active ? "fa-pause" : "fa-play",
       };
-    });
+    }));
 
     const currentLabel = this.#getCurrentLabel(tracks, playlists);
     const liveRate = getLiveRate();
@@ -3094,11 +3633,105 @@ class TsDjMusicApp extends Application {
       hasAmbiencePlaylists: ambiencePlaylists.length > 0,
       isPlaying: Boolean(playbackState.current),
       currentLabel,
+      managerSections: {
+        files: Boolean(managerSectionState.files),
+        music: Boolean(managerSectionState.music),
+        ambience: Boolean(managerSectionState.ambience),
+      },
+      managerCards: getManagerCardTemplateState(),
     };
   }
 
   activateListeners(html) {
     super.activateListeners(html);
+    const root = html[0];
+    if (root instanceof HTMLElement) {
+      root.querySelectorAll(".ts-dj-section[data-section]").forEach((section) => {
+        section.addEventListener("toggle", () => {
+          const key = section.dataset.section;
+          if (!key || !(key in managerSectionState)) return;
+          managerSectionState[key] = section.open;
+        });
+      });
+      root.querySelectorAll(".ts-dj-card-collapse[data-card-key]").forEach((card) => {
+        card.addEventListener("toggle", () => {
+          const key = card.dataset.cardKey;
+          if (!key || !(key in managerCardExpandState)) return;
+          managerCardExpandState[key] = card.open;
+        });
+      });
+      if (!root.dataset.managerPlaylistDndBound) {
+        root.dataset.managerPlaylistDndBound = "true";
+
+        root.addEventListener("dragstart", (event) => {
+          const row = event.target.closest("[data-manager-playlist-track-row]");
+          if (!(row instanceof HTMLElement)) return;
+
+          managerPlaylistDragState.kind = row.dataset.playlistKind ?? null;
+          managerPlaylistDragState.playlistId = row.dataset.playlistId ?? null;
+          managerPlaylistDragState.trackId = row.dataset.trackId ?? null;
+          row.classList.add("is-dragging");
+
+          event.dataTransfer?.setData("text/plain", managerPlaylistDragState.trackId ?? "");
+          if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+        });
+
+        root.addEventListener("dragend", (event) => {
+          const row = event.target.closest("[data-manager-playlist-track-row]");
+          if (row instanceof HTMLElement) {
+            row.classList.remove("is-dragging");
+          }
+          managerPlaylistDragState.kind = null;
+          managerPlaylistDragState.playlistId = null;
+          managerPlaylistDragState.trackId = null;
+        });
+
+        root.addEventListener("dragover", (event) => {
+          const list = event.target.closest("[data-manager-playlist-track-list]");
+          if (!(list instanceof HTMLElement)) return;
+          if (!managerPlaylistDragState.trackId) return;
+          if (list.dataset.playlistKind !== managerPlaylistDragState.kind) return;
+          if (list.dataset.playlistId !== managerPlaylistDragState.playlistId) return;
+
+          const targetRow = event.target.closest("[data-manager-playlist-track-row]");
+          if (!(targetRow instanceof HTMLElement)) return;
+          if (targetRow.dataset.trackId === managerPlaylistDragState.trackId) return;
+          event.preventDefault();
+
+          const draggedRow = [...list.querySelectorAll("[data-manager-playlist-track-row]")]
+            .find((row) => row instanceof HTMLElement && row.dataset.trackId === managerPlaylistDragState.trackId);
+          if (!(draggedRow instanceof HTMLElement)) return;
+
+          const bounds = targetRow.getBoundingClientRect();
+          const shouldInsertAfter = (event.clientY - bounds.top) > (bounds.height / 2);
+          const nextNode = shouldInsertAfter ? targetRow.nextElementSibling : targetRow;
+          if (nextNode === draggedRow) return;
+          list.insertBefore(draggedRow, nextNode);
+        });
+
+        root.addEventListener("drop", async (event) => {
+          const list = event.target.closest("[data-manager-playlist-track-list]");
+          if (!(list instanceof HTMLElement)) return;
+          if (!managerPlaylistDragState.trackId) return;
+          if (list.dataset.playlistKind !== managerPlaylistDragState.kind) return;
+          if (list.dataset.playlistId !== managerPlaylistDragState.playlistId) return;
+          event.preventDefault();
+
+          const orderedVisibleTrackIds = [...list.querySelectorAll("[data-manager-playlist-track-row]")]
+            .map((row) => row instanceof HTMLElement ? row.dataset.trackId ?? null : null)
+            .filter((trackId) => trackId);
+          if (managerPlaylistDragState.kind === "music") {
+            await this.#setPlaylistTrackOrder(list.dataset.playlistId, orderedVisibleTrackIds);
+          } else if (managerPlaylistDragState.kind === "ambience") {
+            await this.#setAmbiencePlaylistTrackOrder(list.dataset.playlistId, orderedVisibleTrackIds);
+          }
+
+          managerPlaylistDragState.kind = null;
+          managerPlaylistDragState.playlistId = null;
+          managerPlaylistDragState.trackId = null;
+        });
+      }
+    }
 
     html.on("click", "[data-action]", async (event) => {
       const action = event.currentTarget.dataset.action;
@@ -3114,6 +3747,9 @@ class TsDjMusicApp extends Application {
         case "delete-file":
           await this.#deleteFile(id);
           break;
+        case "delete-files-block":
+          await this.#deleteFilesBlock();
+          break;
         case "create-track":
           await this.#createOrEditTrack();
           break;
@@ -3122,6 +3758,9 @@ class TsDjMusicApp extends Application {
           break;
         case "delete-track":
           await this.#deleteTrack(id);
+          break;
+        case "delete-tracks-block":
+          await this.#deleteTracksBlock();
           break;
         case "play-track":
           await playTrackById(id);
@@ -3139,9 +3778,20 @@ class TsDjMusicApp extends Application {
         case "delete-playlist":
           await this.#deletePlaylist(id);
           break;
+        case "delete-playlists-block":
+          await this.#deletePlaylistsBlock();
+          break;
         case "play-playlist":
           await playPlaylistById(id);
           break;
+        case "play-playlist-from-track": {
+          const playlistId = event.currentTarget.dataset.playlistId ?? id;
+          const trackId = event.currentTarget.dataset.trackId ?? null;
+          if (playlistId && trackId) {
+            await playPlaylistById(playlistId, { startTrackId: trackId });
+          }
+          break;
+        }
         case "toggle-playlist-loop":
           await togglePlaylistLoop(id);
           await this.#refreshCards([MANAGER_CARD_IDS.musicPlaylists]);
@@ -3149,6 +3799,12 @@ class TsDjMusicApp extends Application {
         case "toggle-playlist-shuffle":
           await togglePlaylistShuffle(id);
           await this.#refreshCards([MANAGER_CARD_IDS.musicPlaylists]);
+          break;
+        case "toggle-manager-playlist-expand":
+          if (id) {
+            managerPlaylistExpandState[id] = !Boolean(managerPlaylistExpandState[id]);
+            await this.#refreshCards([MANAGER_CARD_IDS.musicPlaylists]);
+          }
           break;
         case "pause-current":
           await pauseCurrentPlayback();
@@ -3172,12 +3828,21 @@ class TsDjMusicApp extends Application {
             await this.#refreshCards(Object.values(MANAGER_CARD_IDS), { refreshToolbar: true });
 
             const info = imported.summary ?? {};
-            ui.notifications.info(
-              `TS-DJ-MUSIC: import complete. Files ${info.importedFiles ?? 0}, music playlists ${info.musicPlaylists ?? 0}, ambience playlists ${info.ambiencePlaylists ?? 0}.`
+            notify("info", "ImportAppliedSummary", {
+              files: info.importedFiles ?? 0,
+              musicPlaylists: info.musicPlaylists ?? 0,
+              ambiencePlaylists: info.ambiencePlaylists ?? 0,
+            }, ({ files, musicPlaylists, ambiencePlaylists }) =>
+              `TS-DJ-MUSIC: import complete. Files ${files}, music playlists ${musicPlaylists}, ambience playlists ${ambiencePlaylists}.`
             );
           }
           break;
         }
+        case "reset-module-settings":
+          if (await resetModuleSettingsToDefaults()) {
+            await this.#refreshCards(Object.values(MANAGER_CARD_IDS), { refreshToolbar: true });
+          }
+          break;
         case "create-ambience-track":
           await this.#createOrEditAmbienceTrack();
           break;
@@ -3186,6 +3851,9 @@ class TsDjMusicApp extends Application {
           break;
         case "delete-ambience-track":
           await this.#deleteAmbienceTrack(id);
+          break;
+        case "delete-ambience-tracks-block":
+          await this.#deleteAmbienceTracksBlock();
           break;
         case "play-ambience-track":
           await playAmbienceById(id);
@@ -3206,9 +3874,20 @@ class TsDjMusicApp extends Application {
         case "delete-ambience-playlist":
           await this.#deleteAmbiencePlaylist(id);
           break;
+        case "delete-ambience-playlists-block":
+          await this.#deleteAmbiencePlaylistsBlock();
+          break;
         case "play-ambience-playlist":
           await playAmbiencePlaylistById(id);
           break;
+        case "play-ambience-playlist-from-track": {
+          const playlistId = event.currentTarget.dataset.playlistId ?? id;
+          const trackId = event.currentTarget.dataset.trackId ?? null;
+          if (playlistId && trackId) {
+            await playAmbiencePlaylistById(playlistId, { startTrackId: trackId });
+          }
+          break;
+        }
         case "stop-ambience-playlist":
           await stopAmbienceByPlaylistId(id);
           break;
@@ -3219,6 +3898,12 @@ class TsDjMusicApp extends Application {
         case "toggle-ambience-playlist-shuffle":
           await toggleAmbiencePlaylistShuffle(id);
           await this.#refreshCards([MANAGER_CARD_IDS.ambiencePlaylists]);
+          break;
+        case "toggle-manager-ambience-playlist-expand":
+          if (id) {
+            managerAmbiencePlaylistExpandState[id] = !Boolean(managerAmbiencePlaylistExpandState[id]);
+            await this.#refreshCards([MANAGER_CARD_IDS.ambiencePlaylists]);
+          }
           break;
       }
     });
@@ -3260,17 +3945,19 @@ class TsDjMusicApp extends Application {
   }
 
   #getCurrentLabel(tracks, playlists) {
-    if (!playbackState.current) return "Остановлено";
+    if (!playbackState.current) return t("Status.Stopped", "Stopped");
 
     const currentTrack = tracks.find((track) => track.id === playbackState.current.trackId);
     if (playbackState.current.mode === "playlist") {
       const playlist = playlists.find((entry) => entry.id === playbackState.current.playlistId);
-      return `Плейлист: ${playlist?.name ?? "?"} | Трек: ${currentTrack?.name ?? "?"}`;
+      return tf("Status.ManagerPlaylist", {
+        playlist: playlist?.name ?? "?",
+        track: currentTrack?.name ?? "?",
+      }, ({ playlist: currentPlaylist, track }) => `Playlist: ${currentPlaylist} | Track: ${track}`);
     }
 
-    return `Трек: ${currentTrack?.name ?? "?"}`;
+    return tf("Status.ManagerTrack", { track: currentTrack?.name ?? "?" }, ({ track }) => `Track: ${track}`);
   }
-
   async refreshStorageCards(cardIds = Object.values(MANAGER_CARD_IDS)) {
     if (!this.rendered) return;
     await this.#refreshCards(cardIds);
@@ -3339,8 +4026,10 @@ class TsDjMusicApp extends Application {
     if (!file) return;
 
     const confirmed = await Dialog.confirm({
-      title: "Удалить файл",
-      content: `<p>Удалить файл <b>${escapeHtml(file.name || file.path)}</b> и связанные треки?</p>`,
+      title: t("Dialogs.DeleteFileTitle", "Delete file"),
+      content: tf("Dialogs.DeleteFileContent", {
+        name: escapeHtml(file.name || file.path),
+      }, ({ name }) => `<p>Delete file <b>${name}</b> and linked tracks?</p>`),
     });
     if (!confirmed) return;
 
@@ -3360,12 +4049,25 @@ class TsDjMusicApp extends Application {
       ...playlist,
       trackIds: normalizeArray(playlist.trackIds).filter((id) => !removedAmbienceTrackIds.includes(id)),
     }));
+    const cleaned = await maybeRemoveEmptyPlaylists({
+      musicPreviousPlaylists: getPlaylists(),
+      musicNextPlaylists: nextPlaylists,
+      musicPreviousTrackIds: tracks.map((track) => track.id),
+      musicNextTrackIds: nextTracks.map((track) => track.id),
+      ambiencePreviousPlaylists: getAmbiencePlaylists(),
+      ambienceNextPlaylists: nextAmbiencePlaylists,
+      ambiencePreviousTrackIds: ambienceTracks.map((track) => track.id),
+      ambienceNextTrackIds: nextAmbienceTracks.map((track) => track.id),
+    });
 
-    await setFiles(nextFiles);
-    await setTracks(nextTracks);
-    await setPlaylists(nextPlaylists);
-    await setAmbienceTracks(nextAmbienceTracks);
-    await setAmbiencePlaylists(nextAmbiencePlaylists);
+    await setStorageData({
+      files: nextFiles,
+      tracks: nextTracks,
+      playlists: cleaned.musicPlaylists,
+      ambienceTracks: nextAmbienceTracks,
+      ambiencePlaylists: cleaned.ambiencePlaylists,
+      ambienceAllowConcurrent: getAmbienceAllowConcurrent(),
+    });
 
     if (playbackState.current && removedTrackIds.includes(playbackState.current.trackId)) {
       await stopPlayback();
@@ -3373,14 +4075,63 @@ class TsDjMusicApp extends Application {
     for (const ambienceTrackId of removedAmbienceTrackIds) {
       await stopAmbienceByTrackId(ambienceTrackId);
     }
+    await stopDeletedPlaylistPlayback({
+      deletedMusicPlaylistIds: cleaned.deletedMusicPlaylistIds,
+      deletedAmbiencePlaylistIds: cleaned.deletedAmbiencePlaylistIds,
+    });
 
     await this.#refreshCards(Object.values(MANAGER_CARD_IDS));
+  }
+
+  async #deleteFilesBlock() {
+    const files = getFiles();
+    if (!files.length) return;
+
+    const confirmed = await Dialog.confirm({
+      title: t("Dialogs.DeleteAllFilesTitle", "Delete all files"),
+      content: t("Dialogs.DeleteAllFilesContent", "<p>Delete all files and their linked tracks?</p>"),
+    });
+    if (!confirmed) return;
+
+    const tracks = getTracks();
+    const ambienceTracks = getAmbienceTracks();
+    const nextPlaylists = getPlaylists().map((playlist) => ({
+      ...playlist,
+      trackIds: [],
+    }));
+    const nextAmbiencePlaylists = getAmbiencePlaylists().map((playlist) => ({
+      ...playlist,
+      trackIds: [],
+    }));
+    const cleaned = await maybeRemoveEmptyPlaylists({
+      musicPreviousPlaylists: getPlaylists(),
+      musicNextPlaylists: nextPlaylists,
+      musicPreviousTrackIds: tracks.map((track) => track.id),
+      musicNextTrackIds: [],
+      ambiencePreviousPlaylists: getAmbiencePlaylists(),
+      ambienceNextPlaylists: nextAmbiencePlaylists,
+      ambiencePreviousTrackIds: ambienceTracks.map((track) => track.id),
+      ambienceNextTrackIds: [],
+    });
+
+    await stopPlayback();
+    await stopAllAmbience();
+    await setStorageData({
+      files: [],
+      tracks: [],
+      playlists: cleaned.musicPlaylists,
+      ambienceTracks: [],
+      ambiencePlaylists: cleaned.ambiencePlaylists,
+      ambienceAllowConcurrent: getAmbienceAllowConcurrent(),
+    });
+
+    await this.#refreshCards(Object.values(MANAGER_CARD_IDS), { refreshToolbar: true });
   }
 
   async #createOrEditTrack(trackId = null) {
     const files = getFiles();
     if (!files.length) {
-      ui.notifications.warn("Сначала добавьте хотя бы один файл");
+      notify("warn", "AddFileFirst", {}, "Add at least one file first.");
       return;
     }
 
@@ -3407,8 +4158,8 @@ class TsDjMusicApp extends Application {
     if (!track) return;
 
     const confirmed = await Dialog.confirm({
-      title: "Удалить трек",
-      content: `<p>Удалить трек <b>${escapeHtml(track.name)}</b>?</p>`,
+      title: t("Dialogs.DeleteTrackTitle", "Delete track"),
+      content: tf("Dialogs.DeleteTrackContent", { name: escapeHtml(track.name) }, ({ name }) => `<p>Delete track <b>${name}</b>?</p>`),
     });
     if (!confirmed) return;
 
@@ -3417,15 +4168,64 @@ class TsDjMusicApp extends Application {
       ...playlist,
       trackIds: normalizeArray(playlist.trackIds).filter((id) => id !== trackId),
     }));
+    const cleaned = await maybeRemoveEmptyPlaylists({
+      musicPreviousPlaylists: getPlaylists(),
+      musicNextPlaylists: nextPlaylists,
+      musicPreviousTrackIds: tracks.map((entry) => entry.id),
+      musicNextTrackIds: nextTracks.map((entry) => entry.id),
+    });
 
-    await setTracks(nextTracks);
-    await setPlaylists(nextPlaylists);
+    await setStorageData({
+      files: getFiles(),
+      tracks: nextTracks,
+      playlists: cleaned.musicPlaylists,
+      ambienceTracks: getAmbienceTracks(),
+      ambiencePlaylists: getAmbiencePlaylists(),
+      ambienceAllowConcurrent: getAmbienceAllowConcurrent(),
+    });
 
     if (playbackState.current?.trackId === trackId) {
       await stopPlayback();
     }
+    await stopDeletedPlaylistPlayback({
+      deletedMusicPlaylistIds: cleaned.deletedMusicPlaylistIds,
+    });
 
     await this.#refreshCards([MANAGER_CARD_IDS.musicTracks, MANAGER_CARD_IDS.musicPlaylists]);
+  }
+
+  async #deleteTracksBlock() {
+    const tracks = getTracks();
+    if (!tracks.length) return;
+
+    const confirmed = await Dialog.confirm({
+      title: t("Dialogs.DeleteAllMusicTitle", "Delete all music"),
+      content: t("Dialogs.DeleteAllMusicContent", "<p>Delete all music tracks?</p>"),
+    });
+    if (!confirmed) return;
+
+    const nextPlaylists = getPlaylists().map((playlist) => ({
+      ...playlist,
+      trackIds: [],
+    }));
+    const cleaned = await maybeRemoveEmptyPlaylists({
+      musicPreviousPlaylists: getPlaylists(),
+      musicNextPlaylists: nextPlaylists,
+      musicPreviousTrackIds: tracks.map((track) => track.id),
+      musicNextTrackIds: [],
+    });
+
+    await stopPlayback();
+    await setStorageData({
+      files: getFiles(),
+      tracks: [],
+      playlists: cleaned.musicPlaylists,
+      ambienceTracks: getAmbienceTracks(),
+      ambiencePlaylists: getAmbiencePlaylists(),
+      ambienceAllowConcurrent: getAmbienceAllowConcurrent(),
+    });
+
+    await this.#refreshCards([MANAGER_CARD_IDS.musicTracks, MANAGER_CARD_IDS.musicPlaylists], { refreshToolbar: true });
   }
 
   async #createOrEditPlaylist(playlistId = null) {
@@ -3447,14 +4247,52 @@ class TsDjMusicApp extends Application {
     await this.#refreshCards([MANAGER_CARD_IDS.musicPlaylists]);
   }
 
+  async #reorderPlaylistTracks(playlistId, movedTrackId, targetTrackId, insertAfter = false) {
+    if (!playlistId || !movedTrackId || !targetTrackId || movedTrackId === targetTrackId) return;
+
+    const playlists = getPlaylists();
+    const playlistIndex = playlists.findIndex((entry) => entry.id === playlistId);
+    if (playlistIndex === -1) return;
+
+    const nextTrackIds = reorderTrackIds(playlists[playlistIndex].trackIds, movedTrackId, targetTrackId, insertAfter);
+    if (normalizeArray(playlists[playlistIndex].trackIds).join("|") === nextTrackIds.join("|")) return;
+
+    playlists[playlistIndex] = {
+      ...playlists[playlistIndex],
+      trackIds: nextTrackIds,
+    };
+
+    await setPlaylists(playlists);
+    await this.#refreshCards([MANAGER_CARD_IDS.musicPlaylists]);
+  }
+
+  async #setPlaylistTrackOrder(playlistId, orderedVisibleTrackIds) {
+    if (!playlistId) return;
+
+    const playlists = getPlaylists();
+    const playlistIndex = playlists.findIndex((entry) => entry.id === playlistId);
+    if (playlistIndex === -1) return;
+
+    const nextTrackIds = applyVisibleTrackOrder(playlists[playlistIndex].trackIds, orderedVisibleTrackIds);
+    if (normalizeArray(playlists[playlistIndex].trackIds).join("|") === nextTrackIds.join("|")) return;
+
+    playlists[playlistIndex] = {
+      ...playlists[playlistIndex],
+      trackIds: nextTrackIds,
+    };
+
+    await setPlaylists(playlists);
+    await this.#refreshCards([MANAGER_CARD_IDS.musicPlaylists]);
+  }
+
   async #deletePlaylist(playlistId) {
     const playlists = getPlaylists();
     const playlist = playlists.find((entry) => entry.id === playlistId);
     if (!playlist) return;
 
     const confirmed = await Dialog.confirm({
-      title: "Удалить плейлист",
-      content: `<p>Удалить плейлист <b>${escapeHtml(playlist.name)}</b>?</p>`,
+      title: t("Dialogs.DeletePlaylistTitle", "Delete playlist"),
+      content: tf("Dialogs.DeletePlaylistContent", { name: escapeHtml(playlist.name) }, ({ name }) => `<p>Delete playlist <b>${name}</b>?</p>`),
     });
     if (!confirmed) return;
 
@@ -3467,10 +4305,28 @@ class TsDjMusicApp extends Application {
     await this.#refreshCards([MANAGER_CARD_IDS.musicPlaylists]);
   }
 
+  async #deletePlaylistsBlock() {
+    const playlists = getPlaylists();
+    if (!playlists.length) return;
+
+    const confirmed = await Dialog.confirm({
+      title: t("Dialogs.DeleteAllPlaylistsTitle", "Delete all music playlists"),
+      content: t("Dialogs.DeleteAllPlaylistsContent", "<p>Delete all music playlists?</p>"),
+    });
+    if (!confirmed) return;
+
+    if (playbackState.current?.mode === "playlist") {
+      await stopPlayback();
+    }
+
+    await setPlaylists([]);
+    await this.#refreshCards([MANAGER_CARD_IDS.musicPlaylists], { refreshToolbar: true });
+  }
+
   async #createOrEditAmbienceTrack(trackId = null) {
     const files = getFiles();
     if (!files.length) {
-      ui.notifications.warn("Add at least one file first");
+      notify("warn", "AddFileFirst", {}, "Add at least one file first.");
       return;
     }
 
@@ -3496,8 +4352,8 @@ class TsDjMusicApp extends Application {
     if (!track) return;
 
     const confirmed = await Dialog.confirm({
-      title: "Delete ambience track",
-      content: `<p>Delete ambience track <b>${escapeHtml(track.name)}</b>?</p>`,
+      title: t("Dialogs.DeleteAmbienceTrackTitle", "Delete ambience track"),
+      content: tf("Dialogs.DeleteAmbienceTrackContent", { name: escapeHtml(track.name) }, ({ name }) => `<p>Delete ambience track <b>${name}</b>?</p>`),
     });
     if (!confirmed) return;
 
@@ -3506,11 +4362,60 @@ class TsDjMusicApp extends Application {
       ...playlist,
       trackIds: normalizeArray(playlist.trackIds).filter((id) => id !== trackId),
     }));
+    const cleaned = await maybeRemoveEmptyPlaylists({
+      ambiencePreviousPlaylists: getAmbiencePlaylists(),
+      ambienceNextPlaylists: nextPlaylists,
+      ambiencePreviousTrackIds: tracks.map((entry) => entry.id),
+      ambienceNextTrackIds: nextTracks.map((entry) => entry.id),
+    });
 
-    await setAmbienceTracks(nextTracks);
-    await setAmbiencePlaylists(nextPlaylists);
+    await setStorageData({
+      files: getFiles(),
+      tracks: getTracks(),
+      playlists: getPlaylists(),
+      ambienceTracks: nextTracks,
+      ambiencePlaylists: cleaned.ambiencePlaylists,
+      ambienceAllowConcurrent: getAmbienceAllowConcurrent(),
+    });
     await stopAmbienceByTrackId(trackId);
+    await stopDeletedPlaylistPlayback({
+      deletedAmbiencePlaylistIds: cleaned.deletedAmbiencePlaylistIds,
+    });
     await this.#refreshCards([MANAGER_CARD_IDS.ambienceTracks, MANAGER_CARD_IDS.ambiencePlaylists]);
+  }
+
+  async #deleteAmbienceTracksBlock() {
+    const tracks = getAmbienceTracks();
+    if (!tracks.length) return;
+
+    const confirmed = await Dialog.confirm({
+      title: t("Dialogs.DeleteAllAmbienceTracksTitle", "Delete all ambience"),
+      content: t("Dialogs.DeleteAllAmbienceTracksContent", "<p>Delete all ambience tracks?</p>"),
+    });
+    if (!confirmed) return;
+
+    const nextPlaylists = getAmbiencePlaylists().map((playlist) => ({
+      ...playlist,
+      trackIds: [],
+    }));
+    const cleaned = await maybeRemoveEmptyPlaylists({
+      ambiencePreviousPlaylists: getAmbiencePlaylists(),
+      ambienceNextPlaylists: nextPlaylists,
+      ambiencePreviousTrackIds: tracks.map((track) => track.id),
+      ambienceNextTrackIds: [],
+    });
+
+    await stopAllAmbience();
+    await setStorageData({
+      files: getFiles(),
+      tracks: getTracks(),
+      playlists: getPlaylists(),
+      ambienceTracks: [],
+      ambiencePlaylists: cleaned.ambiencePlaylists,
+      ambienceAllowConcurrent: getAmbienceAllowConcurrent(),
+    });
+
+    await this.#refreshCards([MANAGER_CARD_IDS.ambienceTracks, MANAGER_CARD_IDS.ambiencePlaylists], { refreshToolbar: true });
   }
 
   async #createOrEditAmbiencePlaylist(playlistId = null) {
@@ -3531,19 +4436,75 @@ class TsDjMusicApp extends Application {
     await this.#refreshCards([MANAGER_CARD_IDS.ambiencePlaylists]);
   }
 
+  async #reorderAmbiencePlaylistTracks(playlistId, movedTrackId, targetTrackId, insertAfter = false) {
+    if (!playlistId || !movedTrackId || !targetTrackId || movedTrackId === targetTrackId) return;
+
+    const playlists = getAmbiencePlaylists();
+    const playlistIndex = playlists.findIndex((entry) => entry.id === playlistId);
+    if (playlistIndex === -1) return;
+
+    const nextTrackIds = reorderTrackIds(playlists[playlistIndex].trackIds, movedTrackId, targetTrackId, insertAfter);
+    if (normalizeArray(playlists[playlistIndex].trackIds).join("|") === nextTrackIds.join("|")) return;
+
+    playlists[playlistIndex] = {
+      ...playlists[playlistIndex],
+      trackIds: nextTrackIds,
+    };
+
+    await setAmbiencePlaylists(playlists);
+    await this.#refreshCards([MANAGER_CARD_IDS.ambiencePlaylists]);
+  }
+
+  async #setAmbiencePlaylistTrackOrder(playlistId, orderedVisibleTrackIds) {
+    if (!playlistId) return;
+
+    const playlists = getAmbiencePlaylists();
+    const playlistIndex = playlists.findIndex((entry) => entry.id === playlistId);
+    if (playlistIndex === -1) return;
+
+    const nextTrackIds = applyVisibleTrackOrder(playlists[playlistIndex].trackIds, orderedVisibleTrackIds);
+    if (normalizeArray(playlists[playlistIndex].trackIds).join("|") === nextTrackIds.join("|")) return;
+
+    playlists[playlistIndex] = {
+      ...playlists[playlistIndex],
+      trackIds: nextTrackIds,
+    };
+
+    await setAmbiencePlaylists(playlists);
+    await this.#refreshCards([MANAGER_CARD_IDS.ambiencePlaylists]);
+  }
+
   async #deleteAmbiencePlaylist(playlistId) {
     const playlists = getAmbiencePlaylists();
     const playlist = playlists.find((entry) => entry.id === playlistId);
     if (!playlist) return;
 
     const confirmed = await Dialog.confirm({
-      title: "Delete ambience playlist",
-      content: `<p>Delete ambience playlist <b>${escapeHtml(playlist.name)}</b>?</p>`,
+      title: t("Dialogs.DeleteAmbiencePlaylistTitle", "Delete ambience playlist"),
+      content: tf("Dialogs.DeleteAmbiencePlaylistContent", { name: escapeHtml(playlist.name) }, ({ name }) => `<p>Delete ambience playlist <b>${name}</b>?</p>`),
     });
     if (!confirmed) return;
 
     await setAmbiencePlaylists(playlists.filter((entry) => entry.id !== playlistId));
     await this.#refreshCards([MANAGER_CARD_IDS.ambiencePlaylists]);
+  }
+
+  async #deleteAmbiencePlaylistsBlock() {
+    const playlists = getAmbiencePlaylists();
+    if (!playlists.length) return;
+
+    const confirmed = await Dialog.confirm({
+      title: t("Dialogs.DeleteAllAmbiencePlaylistsTitle", "Delete all ambience playlists"),
+      content: t("Dialogs.DeleteAllAmbiencePlaylistsContent", "<p>Delete all ambience playlists?</p>"),
+    });
+    if (!confirmed) return;
+
+    for (const playlist of playlists) {
+      await stopAmbienceByPlaylistId(playlist.id);
+    }
+
+    await setAmbiencePlaylists([]);
+    await this.#refreshCards([MANAGER_CARD_IDS.ambiencePlaylists], { refreshToolbar: true });
   }
 }
 
@@ -3552,13 +4513,13 @@ async function promptFileData(current = null) {
   const content = `
     <form class="standard-form ts-dj-dialog-form">
       <div class="form-group">
-        <label>Название</label>
+        <label>${escapeHtml(t("Dialogs.FileNameLabel", "Name"))}</label>
         <div class="form-fields">
-          <input type="text" name="name" value="${escapeHtml(current?.name ?? "")}" placeholder="Например: YouTube Hour Mix">
+          <input type="text" name="name" value="${escapeHtml(current?.name ?? "")}" placeholder="${escapeHtml(t("Dialogs.FileNamePlaceholder", "For example: YouTube Hour Mix"))}">
         </div>
       </div>
       <div class="form-group">
-        <label>Путь к файлу</label>
+        <label>${escapeHtml(t("Dialogs.FilePathLabel", "File path"))}</label>
         <div class="form-fields">
           <file-picker type="audio" name="path" value="${escapeHtml(current?.path ?? "")}"></file-picker>
         </div>
@@ -3566,7 +4527,7 @@ async function promptFileData(current = null) {
     </form>
   `;
 
-  const result = await promptDialog("Файл", content, {
+  const result = await promptDialog(t("Dialogs.FileTitle", "File"), content, {
     render: (html) => {
       if (!isNewFile) return;
 
@@ -3594,7 +4555,7 @@ async function promptFileData(current = null) {
 
   const path = String(result.path ?? "").trim();
   if (!path) {
-    ui.notifications.warn("Нужно указать путь к аудио-файлу");
+    notify("warn", "NeedAudioPath", {}, "You must specify a path to an audio file.");
     return null;
   }
 
@@ -3624,44 +4585,44 @@ async function promptTrackData(current, files) {
   const content = `
     <form class="standard-form ts-dj-dialog-form">
       <div class="form-group">
-        <label>Название трека</label>
+        <label>${escapeHtml(t("Dialogs.TrackNameLabel", "Track name"))}</label>
         <div class="form-fields">
-          <input type="text" name="name" value="${escapeHtml(current?.name ?? defaultName)}" placeholder="Например: Песня 1 (00:03-01:20)">
+          <input type="text" name="name" value="${escapeHtml(current?.name ?? defaultName)}" placeholder="${escapeHtml(t("Dialogs.TrackNamePlaceholder", "For example: Song 1 (00:03-01:20)"))}">
         </div>
       </div>
       <div class="form-group">
-        <label>Файл</label>
+        <label>${escapeHtml(t("Dialogs.TrackFileLabel", "File"))}</label>
         <div class="form-fields">
           <select name="fileId">${fileOptions}</select>
         </div>
       </div>
       <div class="form-group">
-        <label>Начало отрезка</label>
+        <label>${escapeHtml(t("Dialogs.TrackStartLabel", "Clip start"))}</label>
         <div class="form-fields">
-          <input type="text" name="start" value="${escapeHtml(initialStart)}" placeholder="00:03 или 3">
+          <input type="text" name="start" value="${escapeHtml(initialStart)}" placeholder="${escapeHtml(t("Dialogs.TrackStartPlaceholder", "00:03 or 3"))}">
         </div>
       </div>
       <div class="form-group">
-        <label>Конец отрезка</label>
+        <label>${escapeHtml(t("Dialogs.TrackEndLabel", "Clip end"))}</label>
         <div class="form-fields">
-          <input type="text" name="end" value="${escapeHtml(initialEnd)}" placeholder="01:20 или 80">
+          <input type="text" name="end" value="${escapeHtml(initialEnd)}" placeholder="${escapeHtml(t("Dialogs.TrackEndPlaceholder", "01:20 or 80"))}">
         </div>
       </div>
       <div class="form-group">
-        <label>Скорость по умолчанию</label>
+        <label>${escapeHtml(t("Dialogs.TrackRateLabel", "Default speed"))}</label>
         <div class="form-fields">
           <select name="rate">${rateOptions}</select>
         </div>
       </div>
       <div class="form-group">
         <div class="form-fields">
-          <button type="button" class="ts-dj-preview-button" data-action="preview-track" title="Превью" aria-label="Превью"><i class="fas fa-play"></i></button>
+          <button type="button" class="ts-dj-preview-button" data-action="preview-track" title="${escapeHtml(t("Common.Preview", "Preview"))}" aria-label="${escapeHtml(t("Common.Preview", "Preview"))}"><i class="fas fa-play"></i></button>
         </div>
       </div>
     </form>
   `;
 
-  const result = await promptDialog("Трек", content, {
+  const result = await promptDialog(t("Dialogs.TrackTitle", "Track"), content, {
     render: (html) => {
       const form = html[0]?.querySelector("form");
       const fileSelect = form?.querySelector("select[name='fileId']");
@@ -3674,8 +4635,8 @@ async function promptTrackData(current, files) {
 
       const setPreviewButtonState = (active) => {
         previewButton.dataset.previewState = active ? "playing" : "idle";
-        previewButton.title = active ? "Остановить превью" : "Превью";
-        previewButton.setAttribute("aria-label", active ? "Остановить превью" : "Превью");
+        previewButton.title = active ? t("Common.StopPreview", "Stop preview") : t("Common.Preview", "Preview");
+        previewButton.setAttribute("aria-label", active ? t("Common.StopPreview", "Stop preview") : t("Common.Preview", "Preview"));
         previewButton.innerHTML = active
           ? "<i class='fas fa-stop'></i>"
           : "<i class='fas fa-play'></i>";
@@ -3698,7 +4659,7 @@ async function promptTrackData(current, files) {
 
         const file = files.find((entry) => entry.id === String(fileSelect.value ?? ""));
         if (!file?.path) {
-          ui.notifications.warn("Нужно выбрать существующий файл");
+          notify("warn", "NeedExistingFile", {}, "You must select an existing file.");
           return;
         }
 
@@ -3711,7 +4672,7 @@ async function promptTrackData(current, files) {
           });
         } catch (error) {
           console.warn(`${MODULE_ID} | failed to start track preview`, error);
-          ui.notifications.warn("TS-DJ-MUSIC: не удалось запустить превью на этом клиенте.");
+          notify("warn", "PreviewUnavailable", {}, "TS-DJ-MUSIC: failed to start preview on this client.");
           setPreviewButtonState(false);
         }
       });
@@ -3792,12 +4753,12 @@ async function promptTrackData(current, files) {
   const fileId = String(result.fileId ?? "");
   const file = files.find((entry) => entry.id === fileId);
   if (!file) {
-    ui.notifications.warn("Нужно выбрать существующий файл");
+    notify("warn", "NeedExistingFile", {}, "You must select an existing file.");
     return null;
   }
   const name = String(result.name ?? "").trim() || getDefaultNameFromFileEntry(file);
   if (!name) {
-    ui.notifications.warn("Нужно указать название трека");
+    notify("warn", "NeedTrackName", {}, "You must specify a track name.");
     return null;
   }
 
@@ -3854,42 +4815,65 @@ function decodePathForDisplay(path) {
 
 async function promptPlaylistData(current, tracks) {
   const checked = new Set(normalizeArray(current?.trackIds));
+  const dialogTracks = getPlaylistTracksForEditor(tracks, normalizeArray(current?.trackIds));
 
-  const trackCheckboxes = tracks.length
-    ? tracks
+  const trackCheckboxes = dialogTracks.length
+    ? dialogTracks
         .map((track) => {
           const isChecked = checked.has(track.id) ? "checked" : "";
-          return `<label class="checkbox"><input type="checkbox" name="trackIds" value="${track.id}" ${isChecked}> ${escapeHtml(track.name)}</label>`;
+          return `
+            <div class="ts-dj-playlist-track-row ${isChecked ? "is-checked" : ""}" data-track-row data-track-id="${escapeHtml(track.id)}" draggable="true">
+              <span class="ts-dj-playlist-track-handle" title="${escapeHtml(t("Common.DragToReorder", "Drag to change order"))}">
+                <i class="fas fa-grip-vertical"></i>
+              </span>
+              <input type="checkbox" name="trackIds" value="${escapeHtml(track.id)}" ${isChecked}>
+              <span class="ts-dj-playlist-track-name">${escapeHtml(track.name)}</span>
+            </div>
+          `;
         })
-        .join("<br>")
-    : "<p class='notes'>Сначала создайте треки.</p>";
+        .join("")
+    : `<p class='notes'>${escapeHtml(t("Dialogs.PlaylistTrackPickerEmpty", "Create tracks first."))}</p>`;
 
   const content = `
     <form class="standard-form ts-dj-dialog-form">
       <div class="form-group">
-        <label>Название плейлиста</label>
+        <label>${escapeHtml(t("Dialogs.PlaylistNameLabel", "Playlist name"))}</label>
         <div class="form-fields">
-          <input type="text" name="name" value="${escapeHtml(current?.name ?? "")}" placeholder="Например: Микс 1">
+          <input type="text" name="name" value="${escapeHtml(current?.name ?? "")}" placeholder="${escapeHtml(t("Dialogs.PlaylistNamePlaceholder", "For example: Mix 1"))}">
         </div>
       </div>
       <div class="form-group stacked">
-        <label>Треки плейлиста</label>
-        <div class="form-fields" style="display:block">${trackCheckboxes}</div>
+        <label>${escapeHtml(t("Dialogs.PlaylistTracksLabel", "Playlist tracks"))}</label>
+        <input type="hidden" name="trackOrder" value="">
+        <div class="form-fields" style="display:block">
+          <p class="notes">${escapeHtml(t("Dialogs.PlaylistTrackPickerNote", "The list starts in a practical order. You can reorder rows by dragging them with the mouse."))}</p>
+          <div class="ts-dj-playlist-track-picker" data-playlist-track-picker>${trackCheckboxes}</div>
+        </div>
       </div>
     </form>
   `;
 
-  const result = await promptDialog("Плейлист", content);
+  const result = await promptDialog(t("Dialogs.PlaylistTitle", "Playlist"), content, {
+    render: (html) => {
+      const form = html[0]?.querySelector("form");
+      initPlaylistTrackPicker(form);
+    },
+  });
   if (!result) return null;
 
   const name = String(result.name ?? "").trim();
   if (!name) {
-    ui.notifications.warn("Нужно указать название плейлиста");
+    notify("warn", "NeedPlaylistName", {}, "You must specify a playlist name.");
     return null;
   }
 
   const selected = result.trackIds;
-  const trackIds = Array.isArray(selected) ? selected : selected ? [selected] : [];
+  const selectedTrackIds = new Set(Array.isArray(selected) ? selected : selected ? [selected] : []);
+  const orderedTrackIds = String(result.trackOrder ?? "")
+    .split(",")
+    .map((trackId) => trackId.trim())
+    .filter(Boolean);
+  const trackIds = orderedTrackIds.filter((trackId) => selectedTrackIds.has(trackId));
 
   return {
     id: current?.id ?? foundry.utils.randomID(),
@@ -3900,7 +4884,12 @@ async function promptPlaylistData(current, tracks) {
   };
 }
 
-async function promptDialog(title, content, { render, close: onClose } = {}) {
+async function promptDialog(title, content, {
+  render,
+  close: onClose,
+  confirmLabel = t("Common.Save", "Save"),
+  confirmIcon = "fa-save",
+} = {}) {
   return new Promise((resolve) => {
     let finished = false;
 
@@ -3917,15 +4906,15 @@ async function promptDialog(title, content, { render, close: onClose } = {}) {
       },
       buttons: {
         save: {
-          label: "Сохранить",
-          icon: "<i class='fas fa-save'></i>",
+          label: confirmLabel,
+          icon: `<i class='fas ${confirmIcon}'></i>`,
           callback: (html) => {
             finished = true;
             resolve(extractFormData(html));
           },
         },
         cancel: {
-          label: "Отмена",
+          label: t("Common.Cancel", "Cancel"),
           icon: "<i class='fas fa-times'></i>",
           callback: () => {
             finished = true;
