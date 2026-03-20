@@ -71,6 +71,7 @@ const SOCKET_CONTROL_ACTIONS = new Set([
 ]);
 const INITIAL_SYNC_DELAY_MS = 350;
 const INITIAL_SYNC_TTL_MS = 10000;
+const FULL_TRACK_LOOP_TOLERANCE_SEC = 0.15;
 const PLAYLIST_DIRECTORY_SCROLL_CLASS = `${MODULE_ID}-playlist-directory-scroll`;
 const NAME_SORT_COLLATOR = new Intl.Collator(["ru", "en"], {
   numeric: true,
@@ -1668,20 +1669,25 @@ async function updateCurrentPlaybackLoopMode(loopEnabled) {
   current.loopEnabled = loopEnabled;
 
   const clipStart = Number.isFinite(current.clipStart) ? current.clipStart : 0;
-  const hasClip = Number.isFinite(current.clipEnd) && current.clipEnd > clipStart;
-  const nativeLoopEnabled = loopEnabled && !hasClip;
+  const loopMode = resolveLoopPlaybackMode({
+    sound: current.sound,
+    loopEnabled,
+    clipStart,
+    clipEnd: current.clipEnd,
+  });
+  current.clipEnd = loopMode.clipEnd;
 
-  if (hasClip && !current.paused) {
+  if (loopMode.hasClip && !loopMode.coversFullTrack && !current.paused) {
     const track = getTracks().find((entry) => entry.id === current.trackId);
     if (track) {
       const resumeAtRaw = getCurrentAbsoluteTime(current);
       let resumeAt = Number.isFinite(resumeAtRaw) ? resumeAtRaw : clipStart;
       if (loopEnabled) {
-        const clipDuration = current.clipEnd - clipStart;
+        const clipDuration = loopMode.clipEnd - clipStart;
         const passed = Math.max(0, resumeAt - clipStart);
         resumeAt = clipStart + (passed % clipDuration);
       } else {
-        resumeAt = Math.min(resumeAt, Math.max(clipStart, current.clipEnd - 0.01));
+        resumeAt = Math.min(resumeAt, Math.max(clipStart, loopMode.clipEnd - 0.01));
       }
 
       const queue = Array.isArray(current.queue) && current.queue.length ? [...current.queue] : [track.id];
@@ -1700,28 +1706,34 @@ async function updateCurrentPlaybackLoopMode(loopEnabled) {
   }
 
   try {
-    current.sound.loop = nativeLoopEnabled;
+    current.sound.loop = loopMode.nativeLoopEnabled;
   } catch (_error) {
     // no-op
   }
 
   try {
-    if (current.sound.element) current.sound.element.loop = nativeLoopEnabled;
+    if (current.sound.element) current.sound.element.loop = loopMode.nativeLoopEnabled;
   } catch (_error) {
     // no-op
   }
 
-  bindSegmentLoopToSound(current.sound, {
-    enabled: loopEnabled && hasClip,
+  current.segmentLoopActive = bindSegmentLoopToSound(current.sound, {
+    enabled: loopMode.useSegmentLoop,
     start: clipStart,
-    end: current.clipEnd,
+    end: loopMode.clipEnd,
     label: "music-toggle",
     onLoop: (loopStart) => markSegmentLoopRestart(current, loopStart),
+    onLoopRestart: (loopStart) => restartCurrentTrackLoopPlayback(loopStart, current.token),
+    getCurrentTime: () => {
+      const active = playbackState.current;
+      if (!active || active.token !== current.token) return null;
+      return getEstimatedAbsoluteTime(active);
+    },
   });
 
   clearClipEndMonitor(current);
-  if (hasClip && !loopEnabled && !current.paused) {
-    current.clipMonitorId = startClipEndMonitor(current.sound, clipStart, current.clipEnd, current.token);
+  if (loopMode.hasClip && !loopEnabled && !current.paused) {
+    current.clipMonitorId = startClipEndMonitor(current.sound, clipStart, loopMode.clipEnd, current.token);
   }
 }
 
@@ -1729,32 +1741,43 @@ function updateAmbiencePlaybackLoopMode(entry, loopEnabled) {
   if (!entry?.sound) return;
   entry.loopEnabled = loopEnabled;
   const clipStart = Number.isFinite(entry.clipStart) ? entry.clipStart : 0;
-  const hasClip = Number.isFinite(entry.clipEnd) && entry.clipEnd > clipStart;
-  const nativeLoopEnabled = loopEnabled && !hasClip;
+  const loopMode = resolveLoopPlaybackMode({
+    sound: entry.sound,
+    loopEnabled,
+    clipStart,
+    clipEnd: entry.clipEnd,
+  });
+  entry.clipEnd = loopMode.clipEnd;
 
   try {
-    entry.sound.loop = nativeLoopEnabled;
+    entry.sound.loop = loopMode.nativeLoopEnabled;
   } catch (_error) {
     // no-op
   }
 
   try {
-    if (entry.sound.element) entry.sound.element.loop = nativeLoopEnabled;
+    if (entry.sound.element) entry.sound.element.loop = loopMode.nativeLoopEnabled;
   } catch (_error) {
     // no-op
   }
 
-  bindSegmentLoopToSound(entry.sound, {
-    enabled: loopEnabled && hasClip,
+  entry.segmentLoopActive = bindSegmentLoopToSound(entry.sound, {
+    enabled: loopMode.useSegmentLoop,
     start: clipStart,
-    end: entry.clipEnd,
+    end: loopMode.clipEnd,
     label: "ambience-toggle",
     onLoop: (loopStart) => markSegmentLoopRestart(entry, loopStart),
+    onLoopRestart: (loopStart) => restartAmbienceLoopPlayback(loopStart, entry.token),
+    getCurrentTime: () => {
+      const activeEntry = ambienceState.active.get(entry.token);
+      if (!activeEntry) return null;
+      return getEstimatedAbsoluteTime(activeEntry);
+    },
   });
 
   clearAmbienceClipEndMonitor(entry);
-  if (hasClip && !loopEnabled && !entry.paused) {
-    entry.clipMonitorId = startAmbienceClipEndMonitor(entry.sound, clipStart, entry.clipEnd, entry.token);
+  if (loopMode.hasClip && !loopEnabled && !entry.paused) {
+    entry.clipMonitorId = startAmbienceClipEndMonitor(entry.sound, clipStart, loopMode.clipEnd, entry.token);
   }
 }
 
@@ -1765,6 +1788,16 @@ function applySoundRate(sound, rate) {
   try {
     if (sound.element && Number.isFinite(sound.element.playbackRate)) {
       sound.element.playbackRate = safeRate;
+      return;
+    }
+  } catch (_error) {
+    // no-op
+  }
+
+  try {
+    if (sound.sourceElement && Number.isFinite(sound.sourceElement.playbackRate)) {
+      sound.sourceElement.playbackRate = safeRate;
+      return;
     }
   } catch (_error) {
     // no-op
@@ -1794,6 +1827,37 @@ function clearSegmentLoopBinding(sound) {
   segmentLoopIntervals.delete(sound);
 }
 
+function resolveLoopPlaybackMode({ sound, loopEnabled = false, clipStart = 0, clipEnd = null } = {}) {
+  const safeLoopEnabled = Boolean(loopEnabled);
+  const safeStart = Number.isFinite(clipStart) ? Math.max(0, Number(clipStart)) : 0;
+  const duration = getSoundDuration(sound);
+  let safeEnd = Number.isFinite(clipEnd) ? Number(clipEnd) : null;
+
+  if (Number.isFinite(safeEnd) && Number.isFinite(duration) && duration > 0) {
+    if (safeEnd > duration) {
+      safeEnd = duration;
+    } else if (Math.abs(safeEnd - duration) <= FULL_TRACK_LOOP_TOLERANCE_SEC) {
+      safeEnd = duration;
+    }
+  }
+
+  const hasClip = Number.isFinite(safeEnd) && safeEnd > safeStart;
+  const coversFullTrack = hasClip
+    && Number.isFinite(duration)
+    && duration > 0
+    && safeStart <= FULL_TRACK_LOOP_TOLERANCE_SEC
+    && safeEnd >= (duration - FULL_TRACK_LOOP_TOLERANCE_SEC);
+  const nativeLoopEnabled = safeLoopEnabled && (!hasClip || coversFullTrack);
+
+  return {
+    clipEnd: safeEnd,
+    hasClip,
+    coversFullTrack,
+    nativeLoopEnabled,
+    useSegmentLoop: safeLoopEnabled && hasClip && !coversFullTrack,
+  };
+}
+
 function hasSeekablePlaybackHandle(sound) {
   if (!sound) return false;
   if (typeof sound.seek === "function") return true;
@@ -1804,9 +1868,7 @@ function hasSeekablePlaybackHandle(sound) {
 }
 
 function hasSegmentLoopActive(state) {
-  if (!state?.loopEnabled) return false;
-  const clipStart = Number.isFinite(state.clipStart) ? state.clipStart : 0;
-  return Number.isFinite(state.clipEnd) && state.clipEnd > clipStart;
+  return Boolean(state?.segmentLoopActive);
 }
 
 function markSegmentLoopRestart(state, loopStart) {
@@ -1818,6 +1880,53 @@ function markSegmentLoopRestart(state, loopStart) {
   window.setTimeout(() => {
     if (state) state.loopRestarting = false;
   }, 250);
+}
+
+async function restartCurrentTrackLoopPlayback(loopStart, token) {
+  const current = playbackState.current;
+  if (!current || current.token !== token) return false;
+
+  const track = getTracks().find((entry) => entry.id === current.trackId);
+  if (!track) return false;
+
+  const queue = Array.isArray(current.queue) && current.queue.length
+    ? [...current.queue]
+    : [track.id];
+
+  return await playTrack(track, {
+    mode: current.mode ?? "track",
+    playlistId: current.playlistId ?? null,
+    queue,
+    index: Number.isFinite(current.index) ? current.index : 0,
+    playlistLoop: Boolean(current.playlistLoop),
+    playlistShuffle: Boolean(current.playlistShuffle),
+    loopOverride: true,
+    playOffset: loopStart,
+  });
+}
+
+async function restartAmbienceLoopPlayback(loopStart, token) {
+  const entry = ambienceState.active.get(token);
+  if (!entry) return false;
+
+  const track = getAmbienceTracks().find((item) => item.id === entry.trackId);
+  if (!track) return false;
+
+  const queue = Array.isArray(entry.queue) && entry.queue.length
+    ? [...entry.queue]
+    : [track.id];
+
+  await stopAmbienceEntry(entry);
+  return await playAmbienceTrack(track, {
+    mode: entry.mode ?? "track",
+    playlistId: entry.playlistId ?? null,
+    queue,
+    index: Number.isFinite(entry.index) ? entry.index : 0,
+    playlistLoop: Boolean(entry.playlistLoop),
+    playlistShuffle: Boolean(entry.playlistShuffle),
+    loopOverride: true,
+    skipStopExisting: true,
+  });
 }
 
 async function ensureSoundKeepsPlaying(sound) {
@@ -1844,7 +1953,7 @@ async function ensureSoundKeepsPlaying(sound) {
   return false;
 }
 
-function bindSegmentLoopToSound(sound, { enabled = false, start = 0, end = null, label = "music", onLoop = null } = {}) {
+function bindSegmentLoopToSound(sound, { enabled = false, start = 0, end = null, label = "music", onLoop = null, onLoopRestart = null, getCurrentTime = null } = {}) {
   clearSegmentLoopBinding(sound);
 
   const safeStart = Number(start);
@@ -1869,11 +1978,27 @@ function bindSegmentLoopToSound(sound, { enabled = false, start = 0, end = null,
     if (restarting) return;
     if (Date.now() < cooldownUntil) return;
 
-    const currentTime = getSoundCurrentTime(sound);
+    const currentTime = typeof getCurrentTime === "function"
+      ? (getCurrentTime() ?? getSoundCurrentTime(sound))
+      : getSoundCurrentTime(sound);
     if (!Number.isFinite(currentTime)) return;
     if ((currentTime + toleranceSec) < safeEnd) return;
 
     restarting = true;
+    if (typeof onLoopRestart === "function") {
+      try {
+        const restarted = await onLoopRestart(safeStart);
+        if (restarted !== false) {
+          cooldownUntil = Date.now() + 250;
+          if (typeof onLoop === "function") onLoop(safeStart);
+          restarting = false;
+          return;
+        }
+      } catch (error) {
+        console.warn(`${MODULE_ID} | clip loop restart failed`, { label, error });
+      }
+    }
+
     const rewound = seekSoundToTime(sound, safeStart);
     if (rewound) {
       await ensureSoundKeepsPlaying(sound);
@@ -2863,13 +2988,9 @@ async function playTrack(track, options = {}) {
 
   const rawClipStart = parseTimeInput(track.start);
   const clipStart = Number.isFinite(rawClipStart) && rawClipStart >= 0 ? rawClipStart : 0;
-  const clipEnd = parseTimeInput(track.end);
   const requestedOffset = Number.isFinite(options.playOffset) ? Number(options.playOffset) : clipStart;
   let offset = Math.max(0, requestedOffset);
-  if (Number.isFinite(clipEnd)) {
-    offset = Math.min(offset, Math.max(clipStart, clipEnd - 0.01));
-  }
-  const hasEnd = Number.isFinite(clipEnd) && clipEnd > clipStart;
+  const requestedClipEnd = parseTimeInput(track.end);
 
   const loop = options.loopOverride ?? Boolean(track.loop);
   const requestId = playbackState.requestId + 1;
@@ -2893,11 +3014,21 @@ async function playTrack(track, options = {}) {
   const defaultRate = normalizeRate(Number(track.rate ?? 1));
   const liveRate = getLiveRate();
   const finalRate = liveRate !== 1 ? liveRate : defaultRate;
-  const nativeLoop = loop && !hasEnd;
+  const loopMode = resolveLoopPlaybackMode({
+    sound,
+    loopEnabled: loop,
+    clipStart,
+    clipEnd: requestedClipEnd,
+  });
+  const clipEnd = loopMode.clipEnd;
+  const hasEnd = loopMode.hasClip;
+  if (hasEnd) {
+    offset = Math.min(offset, Math.max(clipStart, clipEnd - 0.01));
+  }
 
   const playOptions = {
     autoplay: true,
-    loop: nativeLoop,
+    loop: loopMode.nativeLoopEnabled,
     volume: liveMusicVolume,
     onended: () => {
       handleTrackEnded(token).catch((error) => console.warn(`${MODULE_ID} | onended failed`, error));
@@ -2908,7 +3039,7 @@ async function playTrack(track, options = {}) {
 
   if (hasEnd) {
     if (!loop) {
-      playOptions.duration = Math.max(0.01, (clipEnd - offset) / finalRate);
+      playOptions.duration = Math.max(0.01, clipEnd - offset);
     }
   }
 
@@ -2957,6 +3088,7 @@ async function playTrack(track, options = {}) {
     paused: false,
     pausedAt: null,
     loopRestarting: false,
+    segmentLoopActive: false,
     ignoreEndedUntil: 0,
     suppressNextEnd: false,
     defaultRate,
@@ -2965,8 +3097,8 @@ async function playTrack(track, options = {}) {
     timingRate: finalRate,
   };
 
-  bindSegmentLoopToSound(sound, {
-    enabled: loop && hasEnd,
+  playbackState.current.segmentLoopActive = bindSegmentLoopToSound(sound, {
+    enabled: loopMode.useSegmentLoop,
     start: clipStart,
     end: clipEnd,
     label: "music-play",
@@ -2974,6 +3106,12 @@ async function playTrack(track, options = {}) {
       const current = playbackState.current;
       if (!current || current.token !== token) return;
       markSegmentLoopRestart(current, loopStart);
+    },
+    onLoopRestart: (loopStart) => restartCurrentTrackLoopPlayback(loopStart, token),
+    getCurrentTime: () => {
+      const current = playbackState.current;
+      if (!current || current.token !== token) return null;
+      return getEstimatedAbsoluteTime(current);
     },
   });
 
@@ -3007,10 +3145,9 @@ async function playAmbienceTrack(track, options = {}) {
   const playlistShuffle = Boolean(options.playlistShuffle);
 
   const clipStart = parseTimeInput(track.start);
-  const clipEnd = parseTimeInput(track.end);
   const hasStart = Number.isFinite(clipStart) && clipStart >= 0;
   const offset = hasStart ? clipStart : 0;
-  const hasEnd = Number.isFinite(clipEnd) && clipEnd > offset;
+  const requestedClipEnd = parseTimeInput(track.end);
   const loop = options.loopOverride ?? Boolean(track.loop);
   const requestId = ambienceState.nextRequestId + 1;
   ambienceState.nextRequestId = requestId;
@@ -3036,10 +3173,17 @@ async function playAmbienceTrack(track, options = {}) {
   const defaultRate = normalizeRate(Number(track.rate ?? 1));
   const liveRate = getLiveRate();
   const finalRate = liveRate !== 1 ? liveRate : defaultRate;
-  const nativeLoop = loop && !hasEnd;
+  const loopMode = resolveLoopPlaybackMode({
+    sound,
+    loopEnabled: loop,
+    clipStart: offset,
+    clipEnd: requestedClipEnd,
+  });
+  const clipEnd = loopMode.clipEnd;
+  const hasEnd = loopMode.hasClip;
   const playOptions = {
     autoplay: true,
-    loop: nativeLoop,
+    loop: loopMode.nativeLoopEnabled,
     volume: ambienceVolume,
     onended: () => {
       handleAmbienceEnded(token).catch((error) => console.warn(`${MODULE_ID} | ambience onended failed`, error));
@@ -3048,7 +3192,7 @@ async function playAmbienceTrack(track, options = {}) {
   if (hasStart) playOptions.offset = offset;
   if (hasEnd) {
     if (!loop) {
-      playOptions.duration = Math.max(0.01, (clipEnd - offset) / finalRate);
+      playOptions.duration = Math.max(0.01, clipEnd - offset);
     }
   }
 
@@ -3097,6 +3241,7 @@ async function playAmbienceTrack(track, options = {}) {
     ending: false,
     paused: false,
     loopRestarting: false,
+    segmentLoopActive: false,
     ignoreEndedUntil: 0,
     timingBaseAbs: offset,
     timingBaseMs: Date.now(),
@@ -3104,8 +3249,8 @@ async function playAmbienceTrack(track, options = {}) {
   };
   ambienceState.active.set(token, entry);
 
-  bindSegmentLoopToSound(sound, {
-    enabled: loop && hasEnd,
+  entry.segmentLoopActive = bindSegmentLoopToSound(sound, {
+    enabled: loopMode.useSegmentLoop,
     start: offset,
     end: clipEnd,
     label: "ambience-play",
@@ -3113,6 +3258,12 @@ async function playAmbienceTrack(track, options = {}) {
       const activeEntry = ambienceState.active.get(token);
       if (!activeEntry) return;
       markSegmentLoopRestart(activeEntry, loopStart);
+    },
+    onLoopRestart: (loopStart) => restartAmbienceLoopPlayback(loopStart, token),
+    getCurrentTime: () => {
+      const activeEntry = ambienceState.active.get(token);
+      if (!activeEntry) return null;
+      return getEstimatedAbsoluteTime(activeEntry);
     },
   });
 
@@ -5108,7 +5259,7 @@ async function playTrackPreview({ path, start, end, rate } = {}) {
 
   if (clipStart > 0) playOptions.offset = clipStart;
   if (hasEnd) {
-    playOptions.duration = Math.max(0.01, (clipEnd - clipStart) / finalRate);
+    playOptions.duration = Math.max(0.01, clipEnd - clipStart);
   }
 
   trackPreviewState.loading = false;
@@ -5467,7 +5618,7 @@ function getTrackProgressForSidebar(track) {
     : Number.isFinite(soundDuration)
       ? soundDuration
       : null;
-  const absoluteNow = getCurrentAbsoluteTime(current);
+  const absoluteNow = getEstimatedAbsoluteTime(current) ?? getCurrentAbsoluteTime(current);
   if (!Number.isFinite(absoluteNow)) return null;
   const playbackRate = normalizeRate(Number(current.timingRate ?? 1));
   const displayRate = playbackRate > 0 ? playbackRate : 1;
