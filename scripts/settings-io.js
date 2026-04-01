@@ -41,6 +41,10 @@ function tf(key, data = {}, fallback = null) {
   return fallback ?? fullKey;
 }
 
+function localizedFallback(ruText, enText) {
+  return String(game?.i18n?.lang ?? "").toLowerCase().startsWith("ru") ? ruText : enText;
+}
+
 function normalizeArray(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -157,6 +161,101 @@ function normalizeVolume(value) {
   return Math.max(0, Math.min(1, number));
 }
 
+function normalizeOptionalDecibel(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function normalizeNormalizationCacheStore(raw) {
+  const source = normalizeObject(raw);
+  const normalized = {};
+
+  for (const [key, value] of Object.entries(source)) {
+    const cacheKey = asString(key);
+    const numeric = Number(value);
+    if (!cacheKey || !Number.isFinite(numeric)) continue;
+    normalized[cacheKey] = numeric;
+  }
+
+  return normalized;
+}
+
+function cloneNormalizationCacheStore(raw) {
+  return { ...normalizeNormalizationCacheStore(raw) };
+}
+
+function normalizeNormalizationReferenceStore(raw) {
+  const source = normalizeObject(raw);
+  return {
+    music: normalizeOptionalDecibel(source.music),
+    ambience: normalizeOptionalDecibel(source.ambience),
+  };
+}
+
+function cloneNormalizationReferenceStore(raw) {
+  const normalized = normalizeNormalizationReferenceStore(raw);
+  return {
+    music: normalized.music,
+    ambience: normalized.ambience,
+  };
+}
+
+function collectNormalizationCacheFromTracks(tracks = []) {
+  const cache = {};
+
+  for (const rawTrack of normalizeArray(tracks)) {
+    const track = normalizeObject(rawTrack);
+    const cacheKey = asString(track.normalizationCacheKey);
+    const loudnessDb = Number(track.normalizationLoudnessDb);
+    if (!cacheKey || !Number.isFinite(loudnessDb)) continue;
+    cache[cacheKey] = loudnessDb;
+  }
+
+  return cache;
+}
+
+function createFilePathIndexById(files = []) {
+  return new Map(
+    normalizeArray(files)
+      .map((rawFile) => normalizeObject(rawFile))
+      .map((file) => [asString(file.id), asString(file.path)])
+      .filter(([fileId, filePath]) => fileId && filePath)
+  );
+}
+
+function remapNormalizationCacheKey(rawKey, nextFilePath) {
+  const cacheKey = asString(rawKey);
+  const filePath = normalizePath(nextFilePath);
+  if (!cacheKey || !filePath) return "";
+
+  const parts = cacheKey.split("|");
+  if (parts.length < 7) return "";
+
+  parts[1] = filePath;
+  return parts.join("|");
+}
+
+function getImportedTrackNormalizationMetadata(track, nextFilePath) {
+  const source = normalizeObject(track);
+  const version = Number(source.normalizationAnalysisVersion);
+  const loudnessDb = Number(source.normalizationLoudnessDb);
+  const cacheKey = remapNormalizationCacheKey(source.normalizationCacheKey, nextFilePath);
+
+  if (!Number.isFinite(version) || !Number.isFinite(loudnessDb) || !cacheKey) {
+    return {
+      normalizationAnalysisVersion: null,
+      normalizationCacheKey: "",
+      normalizationLoudnessDb: null,
+    };
+  }
+
+  return {
+    normalizationAnalysisVersion: version,
+    normalizationCacheKey: cacheKey,
+    normalizationLoudnessDb: loudnessDb,
+  };
+}
+
 function updateImportProgress(label, pct = 0) {
   const progress = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
   const displayProgressBar = globalThis.SceneNavigation?.displayProgressBar;
@@ -196,6 +295,8 @@ function normalizeStorageData(raw) {
     ambienceTracks: normalizeArray(source.ambienceTracks),
     ambiencePlaylists: normalizeArray(source.ambiencePlaylists),
     ambienceAllowConcurrent: Boolean(source.ambienceAllowConcurrent),
+    normalizationCache: normalizeNormalizationCacheStore(source.normalizationCache),
+    normalizationReferences: normalizeNormalizationReferenceStore(source.normalizationReferences),
   };
 }
 
@@ -273,6 +374,11 @@ async function getCurrentSettingsSnapshot() {
     ambienceTracks: normalizeArray(game.settings.get(MODULE_ID, SETTING_KEYS.ambienceTracks)),
     ambiencePlaylists: normalizeArray(game.settings.get(MODULE_ID, SETTING_KEYS.ambiencePlaylists)),
     ambienceAllowConcurrent: Boolean(game.settings.get(MODULE_ID, SETTING_KEYS.ambienceAllowConcurrent)),
+    normalizationCache: {},
+    normalizationReferences: {
+      music: null,
+      ambience: null,
+    },
   };
 
   return {
@@ -282,6 +388,15 @@ async function getCurrentSettingsSnapshot() {
     ambienceTracks: normalizeArray(store.ambienceTracks),
     ambiencePlaylists: normalizeArray(store.ambiencePlaylists),
     ambienceAllowConcurrent: Boolean(store.ambienceAllowConcurrent),
+    normalizationCache: cloneNormalizationCacheStore(
+      Object.keys(normalizeObject(store.normalizationCache)).length
+        ? store.normalizationCache
+        : {
+          ...collectNormalizationCacheFromTracks(store.tracks),
+          ...collectNormalizationCacheFromTracks(store.ambienceTracks),
+        }
+    ),
+    normalizationReferences: cloneNormalizationReferenceStore(store.normalizationReferences),
     liveRate: normalizeRate(game.settings.get(MODULE_ID, SETTING_KEYS.liveRate)),
     liveMusicVolume: normalizeVolume(game.settings.get(MODULE_ID, SETTING_KEYS.liveMusicVolume)),
     liveAmbienceVolume: normalizeVolume(game.settings.get(MODULE_ID, SETTING_KEYS.liveAmbienceVolume)),
@@ -300,6 +415,8 @@ function toImportShape(payload) {
     ambienceTracks: normalizeArray(data.ambienceTracks),
     ambiencePlaylists: normalizeArray(data.ambiencePlaylists),
     ambienceAllowConcurrent: Boolean(data.ambienceAllowConcurrent),
+    normalizationCache: normalizeNormalizationCacheStore(data.normalizationCache),
+    normalizationReferences: normalizeNormalizationReferenceStore(data.normalizationReferences),
     liveRate: normalizeRate(data.liveRate ?? 1),
     liveMusicVolume: normalizeVolume(data.liveMusicVolume ?? 1),
     liveAmbienceVolume: normalizeVolume(data.liveAmbienceVolume ?? 1),
@@ -309,6 +426,115 @@ function toImportShape(payload) {
 function ensureJsonFileName(fileName, fallbackName = `${MODULE_ID}-settings.json`) {
   const normalized = asString(fileName, fallbackName);
   return normalized.toLowerCase().endsWith(".json") ? normalized : `${normalized}.json`;
+}
+
+function toSafeFileNamePart(value, fallback = "playlist") {
+  const normalized = asString(value, fallback)
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized || fallback;
+}
+
+function sortNamedEntries(entries) {
+  return [...normalizeArray(entries)].sort((left, right) => String(left?.name ?? "").localeCompare(String(right?.name ?? "")));
+}
+
+function buildMusicPlaylistExportPayload(settings, playlistId) {
+  const playlist = normalizeArray(settings?.playlists).find((entry) => asString(entry?.id) === asString(playlistId));
+  if (!playlist) {
+    return { ok: false, error: "not-found" };
+  }
+
+  const playlistTrackIds = normalizeArray(playlist.trackIds)
+    .map((trackId) => asString(trackId))
+    .filter(Boolean);
+  if (!playlistTrackIds.length) {
+    return { ok: false, error: "empty" };
+  }
+
+  const trackMap = new Map(
+    normalizeArray(settings?.tracks)
+      .map((track) => [asString(track?.id), normalizeObject(track)])
+      .filter(([trackId]) => trackId)
+  );
+
+  const tracks = [];
+  const usedFileIds = new Set();
+  for (const trackId of playlistTrackIds) {
+    const track = trackMap.get(trackId);
+    if (!track) continue;
+
+    const fileId = asString(track.fileId);
+    if (!fileId) continue;
+
+    tracks.push({
+      id: asString(track.id, foundry.utils.randomID()),
+      name: asString(track.name, t("Transfer.TrackFallback", "Track")),
+      fileId,
+      start: asString(track.start),
+      end: asString(track.end),
+      rate: normalizeRate(track.rate ?? 1),
+      loop: Boolean(track.loop),
+      normalize: track.normalize !== false,
+      normalizationAnalysisVersion: Number.isFinite(Number(track.normalizationAnalysisVersion)) ? Number(track.normalizationAnalysisVersion) : null,
+      normalizationCacheKey: asString(track.normalizationCacheKey),
+      normalizationLoudnessDb: Number.isFinite(Number(track.normalizationLoudnessDb)) ? Number(track.normalizationLoudnessDb) : null,
+    });
+    usedFileIds.add(fileId);
+  }
+
+  if (!tracks.length) {
+    return { ok: false, error: "empty" };
+  }
+
+  const files = normalizeArray(settings?.files)
+    .map((file) => normalizeObject(file))
+    .filter((file) => usedFileIds.has(asString(file.id)))
+    .map((file) => ({
+      id: asString(file.id, foundry.utils.randomID()),
+      name: asString(file.name, getFileName(file.path)),
+      path: asString(file.path),
+    }))
+    .filter((file) => file.path);
+
+  const validFileIds = new Set(files.map((file) => asString(file.id)).filter(Boolean));
+  const validTracks = tracks.filter((track) => validFileIds.has(asString(track.fileId)));
+  if (!validTracks.length) {
+    return { ok: false, error: "empty" };
+  }
+
+  const validTrackIds = new Set(validTracks.map((track) => asString(track.id)).filter(Boolean));
+  const exportedPlaylist = {
+    id: asString(playlist.id, foundry.utils.randomID()),
+    name: asString(playlist.name, t("Transfer.PlaylistFallback", "Playlist")),
+    loop: Boolean(playlist.loop),
+    shuffle: Boolean(playlist.shuffle),
+    trackIds: playlistTrackIds.filter((trackId) => validTrackIds.has(trackId)),
+  };
+
+  if (!exportedPlaylist.trackIds.length) {
+    return { ok: false, error: "empty" };
+  }
+
+  return {
+    ok: true,
+    playlist: exportedPlaylist,
+    settings: {
+      files,
+      tracks: validTracks,
+      playlists: [exportedPlaylist],
+      ambienceTracks: [],
+      ambiencePlaylists: [],
+      ambienceAllowConcurrent: false,
+      normalizationCache: collectNormalizationCacheFromTracks(validTracks),
+      normalizationReferences: {
+        music: null,
+        ambience: null,
+      },
+    },
+  };
 }
 
 async function promptExportTarget(defaultName) {
@@ -382,6 +608,229 @@ async function promptExportTarget(defaultName) {
               html.find("#ts-dj-export-folder").val(folderPath);
             },
           }).render(true);
+        });
+      },
+    }, { width: 560 }).render(true);
+  });
+}
+
+async function promptMusicPlaylistTransferAction() {
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    new Dialog({
+      title: t("Transfer.PlaylistTransferTitle", "TS-DJ-MUSIC | Playlist import/export"),
+      content: `
+        <div class="ts-dj-transfer-dialog">
+          <p class="ts-dj-transfer-dialog__lead">${t("Transfer.PlaylistTransferLead", "Choose whether to export one music playlist or import it from JSON.")}</p>
+          <section class="ts-dj-transfer-dialog__section ts-dj-transfer-dialog__section--muted">
+            <div class="ts-dj-transfer-dialog__title-row">
+              <h3>${t("Common.Playlist", "Playlist")}</h3>
+              <span>${t("Transfer.PlaylistTransferDescription", "Export includes the playlist together with the tracks and audio files it references. Import adds the playlist into current TS-DJ data.")}</span>
+            </div>
+          </section>
+        </div>
+      `,
+      buttons: {
+        export: {
+          label: t("Common.Export", "Export"),
+          callback: () => settle("export"),
+        },
+        import: {
+          label: t("Common.Import", "Import"),
+          callback: () => settle("import"),
+        },
+        cancel: {
+          label: t("Common.Cancel", "Cancel"),
+          callback: () => settle(null),
+        },
+      },
+      default: "export",
+      close: () => settle(null),
+    }, { width: 520 }).render(true);
+  });
+}
+
+async function promptMergeImportedPlaylists({ musicPlaylists = 0, ambiencePlaylists = 0 } = {}) {
+  const musicCount = Math.max(0, Number(musicPlaylists) || 0);
+  const ambienceCount = Math.max(0, Number(ambiencePlaylists) || 0);
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    new Dialog({
+      title: t("Transfer.PlaylistMergePromptTitle", localizedFallback("TS-DJ-MUSIC | Смерджить плейлисты", "TS-DJ-MUSIC | Merge playlists")),
+      content: `
+        <div class="ts-dj-transfer-dialog">
+          <p class="ts-dj-transfer-dialog__lead">${tf(
+            "Transfer.PlaylistMergePromptLead",
+            { musicPlaylists: musicCount, ambiencePlaylists: ambienceCount },
+            ({ musicPlaylists: music, ambiencePlaylists: ambience }) => localizedFallback(
+              `В JSON найдено ${music} муз. плейлист(а/ов)${ambience > 0 ? ` и ${ambience} эмбиент-плейлист(а/ов)` : ""}. Похоже, это общий экспорт модуля.`,
+              `The JSON contains ${music} music playlist(s)${ambience > 0 ? ` and ${ambience} ambience playlist(s)` : ""}. This looks like a full module export.`
+            )
+          )}</p>
+          <section class="ts-dj-transfer-dialog__section ts-dj-transfer-dialog__section--muted">
+            <div class="ts-dj-transfer-dialog__title-row">
+              <h3>${t("Common.Playlists", "Playlists")}</h3>
+              <span>${t(
+                "Transfer.PlaylistMergePromptDescription",
+                localizedFallback(
+                  "Импорт по этой кнопке смерджит все музыкальные плейлисты из файла в текущие TS-DJ данные. Эмбиент-плейлисты и live-настройки будут проигнорированы.",
+                  "Using this button will merge all music playlists from the file into the current TS-DJ data. Ambience playlists and live settings will be ignored."
+                )
+              )}</span>
+            </div>
+          </section>
+        </div>
+      `,
+      buttons: {
+        merge: {
+          label: t("Transfer.PlaylistMergePromptConfirm", localizedFallback("Смерджить", "Merge")),
+          callback: () => settle(true),
+        },
+        cancel: {
+          label: t("Common.Cancel", "Cancel"),
+          callback: () => settle(false),
+        },
+      },
+      default: "merge",
+      close: () => settle(false),
+    }, { width: 560 }).render(true);
+  });
+}
+
+async function promptMusicPlaylistExportTarget(playlists) {
+  const availablePlaylists = sortNamedEntries(playlists);
+  if (!availablePlaylists.length) return null;
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const defaultFileNames = new Map(
+    availablePlaylists.map((playlist) => [
+      asString(playlist.id),
+      ensureJsonFileName(`${MODULE_ID}-playlist-${toSafeFileNamePart(playlist.name)}-${stamp}.json`, `${MODULE_ID}-playlist-${stamp}.json`),
+    ])
+  );
+  const initialPlaylistId = asString(availablePlaylists[0].id);
+  const initialFileName = defaultFileNames.get(initialPlaylistId) ?? `${MODULE_ID}-playlist-${stamp}.json`;
+  const playlistOptions = availablePlaylists
+    .map((playlist) => `<option value="${foundry.utils.escapeHTML(asString(playlist.id))}">${foundry.utils.escapeHTML(asString(playlist.name, t("Transfer.PlaylistFallback", "Playlist")))}</option>`)
+    .join("");
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    new Dialog({
+      title: t("Transfer.PlaylistExportTitle", "TS-DJ-MUSIC | Export playlist"),
+      content: `
+        <div class="ts-dj-transfer-dialog">
+          <p class="ts-dj-transfer-dialog__lead">${t("Transfer.PlaylistExportLead", "Choose which playlist to export and where to save the JSON file.")}</p>
+          <section class="ts-dj-transfer-dialog__section">
+            <div class="ts-dj-transfer-dialog__title-row">
+              <h3>${t("Common.Playlist", "Playlist")}</h3>
+            </div>
+            <div class="ts-dj-transfer-dialog__field">
+              <label for="ts-dj-playlist-export-id">${t("Transfer.PlaylistLabel", "Playlist")}</label>
+              <div class="ts-dj-transfer-dialog__control">
+                <select id="ts-dj-playlist-export-id">${playlistOptions}</select>
+              </div>
+            </div>
+          </section>
+          <section class="ts-dj-transfer-dialog__section">
+            <div class="ts-dj-transfer-dialog__title-row">
+              <h3>${t("Transfer.FoundryDataTitle", "Foundry Data")}</h3>
+              <span>${t("Transfer.FoundryDataDescription", "Save into a folder accessible from the world.")}</span>
+            </div>
+            <div class="ts-dj-transfer-dialog__field">
+              <label for="ts-dj-playlist-export-folder">${t("Transfer.FolderLabel", "Folder")}</label>
+              <div class="ts-dj-transfer-dialog__control ts-dj-transfer-dialog__control--stacked">
+                <button type="button" id="ts-dj-playlist-export-folder-browse">${t("Transfer.Browse", "Browse")}</button>
+                <input type="text" id="ts-dj-playlist-export-folder" value="worlds">
+              </div>
+            </div>
+          </section>
+          <section class="ts-dj-transfer-dialog__section">
+            <div class="ts-dj-transfer-dialog__title-row">
+              <h3>${t("Transfer.FileSectionTitle", "File")}</h3>
+              <span>${t("Transfer.FileSectionDescription", "The same file name is used for both export options.")}</span>
+            </div>
+            <div class="ts-dj-transfer-dialog__field">
+              <label for="ts-dj-playlist-export-file">${t("Transfer.FileNameLabel", "File name")}</label>
+              <div class="ts-dj-transfer-dialog__control">
+                <input type="text" id="ts-dj-playlist-export-file" value="${foundry.utils.escapeHTML(initialFileName)}">
+              </div>
+            </div>
+          </section>
+          <section class="ts-dj-transfer-dialog__section ts-dj-transfer-dialog__section--muted">
+            <div class="ts-dj-transfer-dialog__title-row">
+              <h3>${t("Transfer.ComputerTitle", "Computer")}</h3>
+              <span>${t("Transfer.ComputerDescription", "Use Download to save the JSON directly to your device.")}</span>
+            </div>
+          </section>
+        </div>
+      `,
+      buttons: {
+        saveToData: {
+          label: t("Transfer.ExportToFoundryData", "Export to Foundry Data"),
+          callback: (html) => {
+            const playlistId = asString(html.find("#ts-dj-playlist-export-id").val());
+            const folder = normalizePath(html.find("#ts-dj-playlist-export-folder").val());
+            const file = ensureJsonFileName(html.find("#ts-dj-playlist-export-file").val(), initialFileName);
+            settle({ playlistId, mode: "data", folder, file });
+          },
+        },
+        saveToComputer: {
+          label: t("Transfer.ExportToComputer", "Export to Computer"),
+          callback: (html) => {
+            const playlistId = asString(html.find("#ts-dj-playlist-export-id").val());
+            const file = ensureJsonFileName(html.find("#ts-dj-playlist-export-file").val(), initialFileName);
+            settle({ playlistId, mode: "download", file });
+          },
+        },
+        cancel: {
+          label: t("Common.Cancel", "Cancel"),
+          callback: () => settle(null),
+        },
+      },
+      default: "saveToData",
+      close: () => settle(null),
+      render: (html) => {
+        let fileNameTouched = false;
+        const updateFileName = (force = false) => {
+          if (fileNameTouched && !force) return;
+          const playlistId = asString(html.find("#ts-dj-playlist-export-id").val(), initialPlaylistId);
+          const nextFileName = defaultFileNames.get(playlistId) ?? initialFileName;
+          html.find("#ts-dj-playlist-export-file").val(nextFileName);
+        };
+
+        html.find("#ts-dj-playlist-export-folder-browse").on("click", () => {
+          new FilePicker({
+            type: "folder",
+            source: "data",
+            callback: (folderPath) => {
+              html.find("#ts-dj-playlist-export-folder").val(folderPath);
+            },
+          }).render(true);
+        });
+
+        html.find("#ts-dj-playlist-export-id").on("change", () => updateFileName());
+        html.find("#ts-dj-playlist-export-file").on("input", () => {
+          fileNameTouched = true;
         });
       },
     }, { width: 560 }).render(true);
@@ -888,6 +1337,174 @@ function resolvePath(rawPath, folderIndex) {
   return null;
 }
 
+async function buildImportFolderIndex(importedFiles) {
+  let folderIndex = { byPath: new Map(), byName: new Map() };
+  const files = normalizeArray(importedFiles);
+
+  if (files.length > 0) {
+    updateImportProgress(t("Transfer.ProgressCheckPaths", "TS-DJ-MUSIC: import in progress. Checking JSON paths..."), 10);
+    folderIndex = mergeFolderIndexes(folderIndex, await buildExactPathIndex(files));
+  }
+
+  const missingImportedFiles = files.filter((rawFile) => {
+    const file = normalizeObject(rawFile);
+    const rawPath = asString(file.path);
+    if (!rawPath) return false;
+    return !resolvePath(rawPath, folderIndex);
+  });
+
+  if (missingImportedFiles.length > 0) {
+    const requirements = createImportRequirements(missingImportedFiles);
+    updateImportProgress(t("Transfer.ProgressSearchFiles", "TS-DJ-MUSIC: import in progress. Searching missing audio files..."), 25);
+    folderIndex = mergeFolderIndexes(folderIndex, await buildFolderIndex("", requirements));
+  }
+
+  return folderIndex;
+}
+
+function createExistingFilePathIndex(files) {
+  const byPathKey = new Map();
+
+  for (const rawFile of normalizeArray(files)) {
+    const file = normalizeObject(rawFile);
+    const fileId = asString(file.id);
+    const filePath = asString(file.path);
+    if (!fileId || !filePath) continue;
+
+    for (const candidatePath of getPathLookupCandidates(filePath)) {
+      const pathKey = toPathKey(candidatePath);
+      if (!pathKey || byPathKey.has(pathKey)) continue;
+      byPathKey.set(pathKey, fileId);
+    }
+  }
+
+  return byPathKey;
+}
+
+function normalizeImportedFilesForMerge(importedFiles, folderIndex, existingFiles = []) {
+  const resultFiles = [];
+  const oldToNewId = new Map();
+  const usedIds = new Set(normalizeArray(existingFiles).map((file) => asString(file?.id)).filter(Boolean));
+  const existingPathIndex = createExistingFilePathIndex(existingFiles);
+  let missing = 0;
+
+  for (const rawFile of normalizeArray(importedFiles)) {
+    const file = normalizeObject(rawFile);
+    const rawPath = asString(file.path);
+    if (!rawPath) {
+      missing += 1;
+      continue;
+    }
+
+    const resolvedPath = resolvePath(rawPath, folderIndex);
+    if (!resolvedPath) {
+      missing += 1;
+      continue;
+    }
+
+    const oldId = asString(file.id, foundry.utils.randomID());
+    const existingId = getPathLookupCandidates(resolvedPath)
+      .map((candidatePath) => existingPathIndex.get(toPathKey(candidatePath)))
+      .find(Boolean);
+    if (existingId) {
+      oldToNewId.set(oldId, existingId);
+      continue;
+    }
+
+    const newId = uniqueId(oldId, usedIds);
+    oldToNewId.set(oldId, newId);
+    resultFiles.push({
+      id: newId,
+      name: asString(file.name, getFileName(resolvedPath)),
+      path: resolvedPath,
+    });
+
+    for (const candidatePath of getPathLookupCandidates(resolvedPath)) {
+      const pathKey = toPathKey(candidatePath);
+      if (!pathKey) continue;
+      existingPathIndex.set(pathKey, newId);
+    }
+  }
+
+  return { resultFiles, oldToNewId, missing };
+}
+
+function normalizeImportedTracksForMerge(importedTracks, oldToNewFileId, existingTracks = [], filePathById = new Map()) {
+  const tracks = [];
+  const oldToNewTrackId = new Map();
+  const usedIds = new Set(normalizeArray(existingTracks).map((track) => asString(track?.id)).filter(Boolean));
+
+  for (const rawTrack of normalizeArray(importedTracks)) {
+    const track = normalizeObject(rawTrack);
+    const oldTrackId = asString(track.id, foundry.utils.randomID());
+    const oldFileId = asString(track.fileId);
+    const mappedFileId = oldToNewFileId.get(oldFileId);
+    if (!mappedFileId) continue;
+
+    const newTrackId = uniqueId(oldTrackId, usedIds);
+    oldToNewTrackId.set(oldTrackId, newTrackId);
+    const nextFilePath = filePathById.get(mappedFileId);
+    const normalizationMetadata = getImportedTrackNormalizationMetadata(track, nextFilePath);
+    tracks.push({
+      id: newTrackId,
+      name: asString(track.name, t("Transfer.TrackFallback", "Track")),
+      fileId: mappedFileId,
+      start: asString(track.start),
+      end: asString(track.end),
+      rate: normalizeRate(track.rate ?? 1),
+      loop: Boolean(track.loop),
+      normalize: track.normalize !== false,
+      normalizationAnalysisVersion: normalizationMetadata.normalizationAnalysisVersion,
+      normalizationCacheKey: normalizationMetadata.normalizationCacheKey,
+      normalizationLoudnessDb: normalizationMetadata.normalizationLoudnessDb,
+    });
+  }
+
+  return { tracks, oldToNewTrackId };
+}
+
+function normalizeImportedPlaylistsForMerge(importedPlaylists, oldToNewTrackId, existingPlaylists = []) {
+  const playlists = [];
+  const usedIds = new Set(normalizeArray(existingPlaylists).map((playlist) => asString(playlist?.id)).filter(Boolean));
+  let skipped = 0;
+
+  for (const rawPlaylist of normalizeArray(importedPlaylists)) {
+    const playlist = normalizeObject(rawPlaylist);
+    const trackIds = normalizeArray(playlist.trackIds)
+      .map((trackId) => oldToNewTrackId.get(asString(trackId)))
+      .filter(Boolean);
+
+    if (!trackIds.length) {
+      skipped += 1;
+      continue;
+    }
+
+    playlists.push({
+      id: uniqueId(asString(playlist.id, foundry.utils.randomID()), usedIds),
+      name: asString(playlist.name, t("Transfer.PlaylistFallback", "Playlist")),
+      loop: Boolean(playlist.loop),
+      shuffle: Boolean(playlist.shuffle),
+      trackIds,
+    });
+  }
+
+  return { playlists, skipped };
+}
+
+function filterTracksForImportedPlaylists(tracks, playlists) {
+  const usedTrackIds = new Set(
+    normalizeArray(playlists).flatMap((playlist) => normalizeArray(playlist.trackIds).map((trackId) => asString(trackId))).filter(Boolean)
+  );
+  if (!usedTrackIds.size) return [];
+  return normalizeArray(tracks).filter((track) => usedTrackIds.has(asString(track?.id)));
+}
+
+function filterFilesForImportedTracks(files, tracks) {
+  const usedFileIds = new Set(normalizeArray(tracks).map((track) => asString(track?.fileId)).filter(Boolean));
+  if (!usedFileIds.size) return [];
+  return normalizeArray(files).filter((file) => usedFileIds.has(asString(file?.id)));
+}
+
 function normalizeImportedFiles(importedFiles, folderIndex) {
   const resultFiles = [];
   const oldToNewId = new Map();
@@ -922,7 +1539,7 @@ function normalizeImportedFiles(importedFiles, folderIndex) {
   return { resultFiles, oldToNewId, missing };
 }
 
-function normalizeImportedTracks(importedTracks, oldToNewFileId) {
+function normalizeImportedTracks(importedTracks, oldToNewFileId, filePathById = new Map()) {
   const tracks = [];
   const oldToNewTrackId = new Map();
   const usedIds = new Set();
@@ -936,6 +1553,8 @@ function normalizeImportedTracks(importedTracks, oldToNewFileId) {
 
     const newTrackId = uniqueId(oldTrackId, usedIds);
     oldToNewTrackId.set(oldTrackId, newTrackId);
+    const nextFilePath = filePathById.get(mappedFileId);
+    const normalizationMetadata = getImportedTrackNormalizationMetadata(track, nextFilePath);
 
     tracks.push({
       id: newTrackId,
@@ -945,6 +1564,10 @@ function normalizeImportedTracks(importedTracks, oldToNewFileId) {
       end: asString(track.end),
       rate: normalizeRate(track.rate ?? 1),
       loop: Boolean(track.loop),
+      normalize: track.normalize !== false,
+      normalizationAnalysisVersion: normalizationMetadata.normalizationAnalysisVersion,
+      normalizationCacheKey: normalizationMetadata.normalizationCacheKey,
+      normalizationLoudnessDb: normalizationMetadata.normalizationLoudnessDb,
     });
   }
 
@@ -981,33 +1604,21 @@ function normalizeImportedPlaylists(importedPlaylists, oldToNewTrackId) {
 
 async function applyImportedSettings(payload) {
   const incoming = toImportShape(payload);
-  let folderIndex = { byPath: new Map(), byName: new Map() };
-
-  if (incoming.files.length > 0) {
-    updateImportProgress(t("Transfer.ProgressCheckPaths", "TS-DJ-MUSIC: import in progress. Checking JSON paths..."), 10);
-    folderIndex = mergeFolderIndexes(folderIndex, await buildExactPathIndex(incoming.files));
-  }
-
-  const missingImportedFiles = incoming.files.filter((rawFile) => {
-    const file = normalizeObject(rawFile);
-    const rawPath = asString(file.path);
-    if (!rawPath) return false;
-    return !resolvePath(rawPath, folderIndex);
-  });
-
-  if (missingImportedFiles.length > 0) {
-    const requirements = createImportRequirements(missingImportedFiles);
-    updateImportProgress(t("Transfer.ProgressSearchFiles", "TS-DJ-MUSIC: import in progress. Searching missing audio files..."), 25);
-    folderIndex = mergeFolderIndexes(folderIndex, await buildFolderIndex("", requirements));
-  }
+  const folderIndex = await buildImportFolderIndex(incoming.files);
 
   const { resultFiles, oldToNewId, missing } = normalizeImportedFiles(incoming.files, folderIndex);
+  const filePathById = createFilePathIndexById(resultFiles);
 
-  const { tracks, oldToNewTrackId } = normalizeImportedTracks(incoming.tracks, oldToNewId);
-  const { tracks: ambienceTracks, oldToNewTrackId: oldToNewAmbienceTrackId } = normalizeImportedTracks(incoming.ambienceTracks, oldToNewId);
+  const { tracks, oldToNewTrackId } = normalizeImportedTracks(incoming.tracks, oldToNewId, filePathById);
+  const { tracks: ambienceTracks, oldToNewTrackId: oldToNewAmbienceTrackId } = normalizeImportedTracks(incoming.ambienceTracks, oldToNewId, filePathById);
 
   const { playlists, skipped: skippedPlaylists } = normalizeImportedPlaylists(incoming.playlists, oldToNewTrackId);
   const { playlists: ambiencePlaylists, skipped: skippedAmbiencePlaylists } = normalizeImportedPlaylists(incoming.ambiencePlaylists, oldToNewAmbienceTrackId);
+  const normalizationCache = cloneNormalizationCacheStore({
+    ...incoming.normalizationCache,
+    ...collectNormalizationCacheFromTracks(tracks),
+    ...collectNormalizationCacheFromTracks(ambienceTracks),
+  });
 
   updateImportProgress(t("Transfer.ProgressApply", "TS-DJ-MUSIC: import in progress. Applying settings..."), 80);
   await setStorageSnapshot({
@@ -1017,6 +1628,8 @@ async function applyImportedSettings(payload) {
     ambienceTracks,
     ambiencePlaylists,
     ambienceAllowConcurrent: Boolean(incoming.ambienceAllowConcurrent),
+    normalizationCache,
+    normalizationReferences: incoming.normalizationReferences,
   });
   await game.settings.set(MODULE_ID, SETTING_KEYS.liveRate, normalizeRate(incoming.liveRate));
   await game.settings.set(MODULE_ID, SETTING_KEYS.liveMusicVolume, normalizeVolume(incoming.liveMusicVolume));
@@ -1034,6 +1647,59 @@ async function applyImportedSettings(payload) {
       ambiencePlaylists: ambiencePlaylists.length,
       skippedMusicPlaylists: skippedPlaylists,
       skippedAmbiencePlaylists: skippedAmbiencePlaylists,
+    },
+  };
+}
+
+async function applyImportedMusicPlaylist(incoming) {
+  const current = await getCurrentSettingsSnapshot();
+  const folderIndex = await buildImportFolderIndex(incoming.files);
+  const { resultFiles, oldToNewId, missing } = normalizeImportedFilesForMerge(incoming.files, folderIndex, current.files);
+  const filePathById = createFilePathIndexById([...normalizeArray(current.files), ...resultFiles]);
+  const { tracks, oldToNewTrackId } = normalizeImportedTracksForMerge(incoming.tracks, oldToNewId, current.tracks, filePathById);
+  const { playlists, skipped } = normalizeImportedPlaylistsForMerge(incoming.playlists, oldToNewTrackId, current.playlists);
+  const referencedTracks = filterTracksForImportedPlaylists(tracks, playlists);
+  const referencedFiles = filterFilesForImportedTracks(resultFiles, referencedTracks);
+  const normalizationCache = cloneNormalizationCacheStore({
+    ...current.normalizationCache,
+    ...collectNormalizationCacheFromTracks(referencedTracks),
+  });
+
+  if (!playlists.length || !referencedTracks.length) {
+    return {
+      applied: false,
+      cancelled: false,
+      summary: {
+        importedFiles: 0,
+        missingFiles: missing,
+        musicTracks: 0,
+        musicPlaylists: 0,
+        skippedMusicPlaylists: skipped,
+      },
+    };
+  }
+
+  updateImportProgress(t("Transfer.ProgressApply", "TS-DJ-MUSIC: import in progress. Applying settings..."), 80);
+  await setStorageSnapshot({
+    files: [...normalizeArray(current.files), ...referencedFiles],
+    tracks: [...normalizeArray(current.tracks), ...referencedTracks],
+    playlists: [...normalizeArray(current.playlists), ...playlists],
+    ambienceTracks: normalizeArray(current.ambienceTracks),
+    ambiencePlaylists: normalizeArray(current.ambiencePlaylists),
+    ambienceAllowConcurrent: Boolean(current.ambienceAllowConcurrent),
+    normalizationCache,
+    normalizationReferences: current.normalizationReferences,
+  });
+
+  return {
+    applied: true,
+    cancelled: false,
+    summary: {
+      importedFiles: referencedFiles.length,
+      missingFiles: missing,
+      musicTracks: referencedTracks.length,
+      musicPlaylists: playlists.length,
+      skippedMusicPlaylists: skipped,
     },
   };
 }
@@ -1071,6 +1737,133 @@ export async function exportModuleSettings() {
   }
 
   return true;
+}
+
+export async function transferMusicPlaylist() {
+  if (!canCurrentUserExportSettings(game.user)) {
+    ui.notifications.warn(t("Transfer.ImportPermissionDenied", "TS-DJ-MUSIC: no permission to import settings."));
+    return { action: null, applied: false, cancelled: false };
+  }
+
+  const action = await promptMusicPlaylistTransferAction();
+  if (!action) {
+    return { action: null, applied: false, cancelled: true };
+  }
+
+  if (action === "export") {
+    const settings = await getCurrentSettingsSnapshot();
+    const playlists = sortNamedEntries(settings.playlists);
+    if (!playlists.length) {
+      ui.notifications.warn(t("Notes.NoPlaylistsYet", "No playlists yet."));
+      return { action, applied: false, cancelled: false };
+    }
+
+    const target = await promptMusicPlaylistExportTarget(playlists);
+    if (!target) {
+      return { action, applied: false, cancelled: true };
+    }
+
+    const payloadData = buildMusicPlaylistExportPayload(settings, target.playlistId);
+    if (!payloadData.ok) {
+      ui.notifications.warn(payloadData.error === "not-found"
+        ? t("Notifications.PlaylistNotFound", "TS-DJ-MUSIC: playlist not found.")
+        : t("Notifications.PlaylistEmpty", "TS-DJ-MUSIC: the playlist has no tracks."));
+      return { action, applied: false, cancelled: false };
+    }
+
+    const payload = {
+      version: 1,
+      moduleId: MODULE_ID,
+      exportKind: "music-playlist",
+      exportedAt: new Date().toISOString(),
+      settings: payloadData.settings,
+    };
+
+    try {
+      if (target.mode === "download") {
+        const savedFile = await downloadJsonToComputer(payload, target.file);
+        ui.notifications.info(tf("Transfer.PlaylistExportSavedFile", { path: savedFile }, ({ path }) => `TS-DJ-MUSIC: playlist exported to ${path}.`));
+      } else {
+        const savedPath = await uploadJsonToDataFolder(payload, target.folder, target.file);
+        ui.notifications.info(tf("Transfer.PlaylistExportSavedPath", { path: savedPath }, ({ path }) => `TS-DJ-MUSIC: playlist exported to ${path}.`));
+      }
+    } catch (error) {
+      console.warn(`${MODULE_ID} | playlist export failed`, error);
+      ui.notifications.error(t("Transfer.PlaylistExportFailed", "TS-DJ-MUSIC: playlist export failed."));
+      return { action, applied: false, cancelled: false };
+    }
+
+    return { action, applied: false, cancelled: false };
+  }
+
+  if (importInProgress) {
+    return { action, applied: false, cancelled: true };
+  }
+  importInProgress = true;
+
+  try {
+    const source = await promptImportSource();
+    if (!source) {
+      return { action, applied: false, cancelled: true };
+    }
+
+    let payload;
+    try {
+      if (source.mode === "file") {
+        payload = await readJsonFromLocalFile(source.file);
+      } else {
+        payload = await fetchJsonFromFoundryPath(source.path);
+      }
+    } catch (error) {
+      console.warn(`${MODULE_ID} | playlist import read failed`, error);
+      ui.notifications.error(source.mode === "file"
+        ? t("Transfer.ImportReadFailedComputer", "TS-DJ-MUSIC: failed to load JSON from your computer.")
+        : t("Transfer.ImportReadFailedFoundry", "TS-DJ-MUSIC: failed to load JSON from Foundry Data."));
+      return { action, applied: false, cancelled: false };
+    }
+
+    if (!payload || typeof payload !== "object") {
+      ui.notifications.error(t("Transfer.PlaylistImportInvalidPayload", "TS-DJ-MUSIC: invalid playlist import payload."));
+      return { action, applied: false, cancelled: false };
+    }
+
+    const incoming = toImportShape(payload);
+    const musicPlaylistCount = normalizeArray(incoming.playlists).length;
+    if (musicPlaylistCount === 0) {
+      ui.notifications.error(t("Transfer.PlaylistImportInvalidPayload", "TS-DJ-MUSIC: invalid playlist import payload."));
+      return { action, applied: false, cancelled: false };
+    }
+
+    if (musicPlaylistCount > 1) {
+      const shouldMerge = await promptMergeImportedPlaylists({
+        musicPlaylists: musicPlaylistCount,
+        ambiencePlaylists: normalizeArray(incoming.ambiencePlaylists).length,
+      });
+      if (!shouldMerge) {
+        return { action, applied: false, cancelled: true };
+      }
+    }
+
+    if (!updateImportProgress(t("Transfer.ProgressStarted", "TS-DJ-MUSIC: import started..."), 5)) {
+      ui.notifications.info(t("Transfer.ImportStartedFallback", "TS-DJ-MUSIC: import started. Searching audio files..."));
+    }
+
+    try {
+      const result = await applyImportedMusicPlaylist(incoming);
+      updateImportProgress(t("Transfer.ProgressComplete", "TS-DJ-MUSIC: import complete."), 100);
+      if (!result.applied && !result.cancelled) {
+        ui.notifications.warn(t("Transfer.PlaylistImportNoChanges", "TS-DJ-MUSIC: playlist import finished with no changes."));
+      }
+      return { action, ...result };
+    } catch (error) {
+      updateImportProgress(t("Transfer.ProgressFailed", "TS-DJ-MUSIC: import failed."), 100);
+      console.warn(`${MODULE_ID} | playlist import apply failed`, error);
+      ui.notifications.error(t("Transfer.PlaylistImportFailedApply", "TS-DJ-MUSIC: playlist import failed while applying data."));
+      return { action, applied: false, cancelled: false };
+    }
+  } finally {
+    importInProgress = false;
+  }
 }
 
 export async function importModuleSettings() {

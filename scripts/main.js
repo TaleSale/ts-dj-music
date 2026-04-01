@@ -1,5 +1,4 @@
-﻿import { exportModuleSettings, importModuleSettings } from "./settings-io.js";
-
+import { exportModuleSettings, importModuleSettings, transferMusicPlaylist } from "./settings-io.js";
 const MODULE_ID = "ts-dj-music";
 
 const SETTING_KEYS = {
@@ -72,6 +71,23 @@ const SOCKET_CONTROL_ACTIONS = new Set([
 const INITIAL_SYNC_DELAY_MS = 350;
 const INITIAL_SYNC_TTL_MS = 10000;
 const FULL_TRACK_LOOP_TOLERANCE_SEC = 0.15;
+const NORMALIZATION_ANALYSIS_VERSION = 11;
+const MAX_NORMALIZATION_ANALYSIS_SEC = 1;
+const NORMALIZATION_POLL_MS = 50;
+const NORMALIZATION_BIND_RETRY_MS = 75;
+const NORMALIZATION_BIND_MAX_WAIT_MS = 1500;
+const PRELOAD_NORMALIZATION_MAX_WAIT_MS = 8000;
+const PRELOAD_NORMALIZATION_RATE = 2;
+const NORMALIZATION_SCAN_WINDOW_SEC = 0.5;
+const NORMALIZATION_SCAN_WINDOW_COUNT = 3;
+const NORMALIZATION_SCAN_SAMPLE_STEP = 1;
+const MIN_NORMALIZATION_RMS = 0.00001;
+const MIN_NORMALIZATION_ACTIVE_SAMPLE = 0.0001;
+const NORMALIZATION_TOP_BLOCK_PORTION = 0.2;
+const MIN_NORMALIZATION_GAIN = 0.1;
+const MAX_NORMALIZATION_GAIN = 12;
+const MAX_SOUND_GAIN = 12;
+const NORMALIZATION_DEBUG_LOGS = true;
 const PLAYLIST_DIRECTORY_SCROLL_CLASS = `${MODULE_ID}-playlist-directory-scroll`;
 const NAME_SORT_COLLATOR = new Intl.Collator(["ru", "en"], {
   numeric: true,
@@ -89,6 +105,7 @@ const DEFAULT_CLIENT_SETTINGS = Object.freeze({
 
 let appInstance = null;
 const managerSectionState = {
+  normalization: true,
   files: true,
   music: true,
   ambience: true,
@@ -144,6 +161,11 @@ const storageState = {
   ambienceTracks: [],
   ambiencePlaylists: [],
   ambienceAllowConcurrent: false,
+  normalizationCache: {},
+  normalizationReferences: {
+    music: null,
+    ambience: null,
+  },
 };
 let storageLoaded = false;
 const audioFileCache = new Map();
@@ -152,6 +174,27 @@ let ambienceEnvironmentVolumeTicker = null;
 let lastAmbienceVolumeFingerprint = null;
 const pendingPlaybackSyncRequests = new Map();
 const segmentLoopIntervals = new WeakMap();
+const normalizationAnalysisCache = new Map();
+const normalizationScanState = {
+  music: false,
+  ambience: false,
+};
+const sessionNormalizationState = {
+  music: {
+    displayCurrentDb: null,
+    referenceDb: null,
+    manualReferenceDb: null,
+    displayOriginalDb: null,
+    displayTargetDb: null,
+  },
+  ambience: {
+    displayCurrentDb: null,
+    referenceDb: null,
+    manualReferenceDb: null,
+    displayOriginalDb: null,
+    displayTargetDb: null,
+  },
+};
 
 function i18nKey(key) {
   return key.startsWith(`${I18N_PREFIX}.`) ? key : `${I18N_PREFIX}.${key}`;
@@ -186,6 +229,12 @@ function yesNo(value) {
 
 function onOff(value) {
   return value ? t("Common.On", "on") : t("Common.Off", "off");
+}
+
+function localizedFallback(ruText, enText) {
+  return String(game?.i18n?.lang ?? "").toLowerCase().startsWith("ru")
+    ? ruText
+    : enText;
 }
 
 function untitledName(value) {
@@ -492,18 +541,108 @@ function defaultStorageData() {
     ambienceTracks: [],
     ambiencePlaylists: [],
     ambienceAllowConcurrent: false,
+    normalizationCache: {},
+    normalizationReferences: {
+      music: null,
+      ambience: null,
+    },
   };
+}
+
+function normalizeNormalizationCacheStore(raw) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  const normalized = {};
+
+  for (const [key, value] of Object.entries(source)) {
+    const cacheKey = String(key ?? "");
+    const numeric = Number(value);
+    if (!cacheKey || !Number.isFinite(numeric)) continue;
+    normalized[cacheKey] = numeric;
+  }
+
+  return normalized;
+}
+
+function applyNormalizationCacheStore(cacheStore = {}) {
+  normalizationAnalysisCache.clear();
+  const normalized = normalizeNormalizationCacheStore(cacheStore);
+  for (const [key, value] of Object.entries(normalized)) {
+    normalizationAnalysisCache.set(key, value);
+  }
+  return normalized;
+}
+
+function cloneNormalizationCacheStore(cacheStore = null) {
+  if (cacheStore && typeof cacheStore === "object") {
+    return { ...normalizeNormalizationCacheStore(cacheStore) };
+  }
+
+  const cloned = {};
+  for (const [key, value] of normalizationAnalysisCache.entries()) {
+    const cacheKey = String(key ?? "");
+    const numeric = Number(value);
+    if (!cacheKey || !Number.isFinite(numeric)) continue;
+    cloned[cacheKey] = numeric;
+  }
+  return cloned;
+}
+
+function normalizeNormalizationReferenceStore(raw) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  return {
+    music: normalizeOptionalDecibel(source.music),
+    ambience: normalizeOptionalDecibel(source.ambience),
+  };
+}
+
+function cloneNormalizationReferenceStore(store = null) {
+  const normalized = normalizeNormalizationReferenceStore(store);
+  return {
+    music: normalized.music,
+    ambience: normalized.ambience,
+  };
+}
+
+function hydrateTrackNormalizationMetadata(tracks = [], files = [], normalizationCache = {}) {
+  const normalizedTracks = normalizeArray(tracks).map((entry) => ({ ...entry }));
+  const fileMap = new Map(normalizeArray(files).map((file) => [file.id, file?.path ?? ""]));
+  const cacheStore = normalizeNormalizationCacheStore(normalizationCache);
+
+  for (const track of normalizedTracks) {
+    const filePath = fileMap.get(track?.fileId) ?? "";
+    if (!filePath) continue;
+
+    const storedLoudnessDb = getStoredTrackNormalizationLoudnessDb(track, filePath);
+    if (Number.isFinite(storedLoudnessDb)) continue;
+
+    const cacheKey = getTrackNormalizationCacheKey(track, filePath);
+    const cachedValue = Number(cacheStore[cacheKey]);
+    if (!Number.isFinite(cachedValue)) continue;
+
+    track.normalizationAnalysisVersion = NORMALIZATION_ANALYSIS_VERSION;
+    track.normalizationCacheKey = cacheKey;
+    track.normalizationLoudnessDb = cachedValue;
+  }
+
+  return normalizedTracks;
 }
 
 function normalizeStorageData(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
+  const files = normalizeArray(source.files);
+  const normalizationCache = normalizeNormalizationCacheStore(source.normalizationCache);
+  const normalizationReferences = normalizeNormalizationReferenceStore(source.normalizationReferences);
+  const tracks = hydrateTrackNormalizationMetadata(source.tracks, files, normalizationCache);
+  const ambienceTracks = hydrateTrackNormalizationMetadata(source.ambienceTracks, files, normalizationCache);
   return {
-    files: normalizeArray(source.files),
-    tracks: normalizeArray(source.tracks),
+    files,
+    tracks,
     playlists: normalizeArray(source.playlists),
-    ambienceTracks: normalizeArray(source.ambienceTracks),
+    ambienceTracks,
     ambiencePlaylists: normalizeArray(source.ambiencePlaylists),
     ambienceAllowConcurrent: Boolean(source.ambienceAllowConcurrent),
+    normalizationCache,
+    normalizationReferences,
   };
 }
 
@@ -515,6 +654,8 @@ function cloneStorageData(data = storageState) {
     ambienceTracks: normalizeArray(data.ambienceTracks).map((entry) => ({ ...entry })),
     ambiencePlaylists: normalizeArray(data.ambiencePlaylists).map((entry) => ({ ...entry, trackIds: normalizeArray(entry.trackIds) })),
     ambienceAllowConcurrent: Boolean(data.ambienceAllowConcurrent),
+    normalizationCache: cloneNormalizationCacheStore(),
+    normalizationReferences: cloneNormalizationReferenceStore(data.normalizationReferences),
   };
 }
 
@@ -526,7 +667,308 @@ function applyStorageData(next) {
   storageState.ambienceTracks = normalized.ambienceTracks;
   storageState.ambiencePlaylists = normalized.ambiencePlaylists;
   storageState.ambienceAllowConcurrent = normalized.ambienceAllowConcurrent;
+  storageState.normalizationCache = applyNormalizationCacheStore(normalized.normalizationCache);
+  storageState.normalizationReferences = cloneNormalizationReferenceStore(normalized.normalizationReferences);
+  applyStoredNormalizationReferences(storageState.normalizationReferences, { refresh: false });
   storageLoaded = true;
+}
+
+function getNormalizationChannelKey(channel) {
+  return String(channel ?? "music").toLowerCase() === "ambience"
+    ? "ambience"
+    : "music";
+}
+
+function getSessionNormalizationReferenceDb(channel) {
+  const key = getNormalizationChannelKey(channel);
+  const raw = sessionNormalizationState[key]?.referenceDb;
+  const value = raw === null || raw === undefined || raw === ""
+    ? null
+    : Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
+
+function getSessionManualNormalizationReferenceDb(channel) {
+  const key = getNormalizationChannelKey(channel);
+  const raw = sessionNormalizationState[key]?.manualReferenceDb;
+  const value = raw === null || raw === undefined || raw === ""
+    ? null
+    : Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
+
+function normalizeOptionalDecibel(value) {
+  const raw = value;
+  const numeric = raw === null || raw === undefined || raw === ""
+    ? null
+    : Number(raw);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function setSessionNormalizationReferenceDb(channel, value, { refresh = true } = {}) {
+  const key = getNormalizationChannelKey(channel);
+  sessionNormalizationState[key].referenceDb = normalizeOptionalDecibel(value);
+  if (refresh) {
+    refreshLiveControlsUi();
+  }
+}
+
+function setSessionManualNormalizationReferenceDb(channel, value, { refresh = true } = {}) {
+  const key = getNormalizationChannelKey(channel);
+  sessionNormalizationState[key].manualReferenceDb = normalizeOptionalDecibel(value);
+  if (refresh) {
+    refreshLiveControlsUi();
+  }
+}
+
+function getSessionNormalizationDisplay(channel) {
+  const key = getNormalizationChannelKey(channel);
+  return {
+    currentDb: normalizeOptionalDecibel(sessionNormalizationState[key]?.displayCurrentDb),
+    originalDb: normalizeOptionalDecibel(sessionNormalizationState[key]?.displayOriginalDb),
+    targetDb: normalizeOptionalDecibel(sessionNormalizationState[key]?.displayTargetDb),
+  };
+}
+
+function setSessionNormalizationDisplay(channel, {
+  currentDb = undefined,
+  originalDb = undefined,
+  targetDb = undefined,
+} = {}, { refresh = true } = {}) {
+  const key = getNormalizationChannelKey(channel);
+  if (currentDb !== undefined) {
+    sessionNormalizationState[key].displayCurrentDb = normalizeOptionalDecibel(currentDb);
+  }
+  if (originalDb !== undefined) {
+    sessionNormalizationState[key].displayOriginalDb = normalizeOptionalDecibel(originalDb);
+  }
+  if (targetDb !== undefined) {
+    sessionNormalizationState[key].displayTargetDb = normalizeOptionalDecibel(targetDb);
+  }
+  if (refresh) {
+    refreshLiveControlsUi();
+  }
+}
+
+function applyStoredNormalizationReference(channel, referenceDb, { refresh = true } = {}) {
+  const channelKey = getNormalizationChannelKey(channel);
+  const normalizedReferenceDb = normalizeOptionalDecibel(referenceDb);
+
+  setSessionManualNormalizationReferenceDb(channelKey, normalizedReferenceDb, { refresh: false });
+  setSessionNormalizationReferenceDb(channelKey, normalizedReferenceDb, { refresh: false });
+
+  if (channelKey === "music") {
+    const current = playbackState.current;
+    if (Number.isFinite(normalizedReferenceDb)) {
+      if (current?.normalizationEnabled && Number.isFinite(current.normalizationDb)) {
+        const normalized = calculateNormalizationGain("music", current.normalizationDb);
+        current.normalizationGain = normalized.gain;
+        setSessionNormalizationDisplay("music", {
+          currentDb: getAppliedNormalizationDb(current.normalizationDb, normalized.gain),
+          originalDb: current.normalizationDb,
+          targetDb: normalized.referenceDb,
+        }, { refresh: false });
+        applyMusicVolumeToCurrentPlayback({ force: true });
+      } else {
+        setSessionNormalizationDisplay("music", {
+          currentDb: null,
+          originalDb: Number.isFinite(current?.normalizationDb) ? current.normalizationDb : null,
+          targetDb: normalizedReferenceDb,
+        }, { refresh: false });
+      }
+    } else {
+      if (current?.normalizationEnabled) {
+        current.normalizationGain = 1;
+        applyMusicVolumeToCurrentPlayback({ force: true });
+      }
+      setSessionNormalizationDisplay("music", {
+        currentDb: null,
+        originalDb: null,
+        targetDb: null,
+      }, { refresh: false });
+    }
+  } else {
+    let displayEntry = null;
+    for (const entry of ambienceState.active.values()) {
+      if (!entry?.normalizationEnabled || !Number.isFinite(entry.normalizationDb)) continue;
+      const normalized = Number.isFinite(normalizedReferenceDb)
+        ? calculateNormalizationGain("ambience", entry.normalizationDb)
+        : { gain: 1, referenceDb: null };
+      entry.normalizationGain = normalized.gain;
+      displayEntry = entry;
+    }
+
+    if (Number.isFinite(normalizedReferenceDb)) {
+      if (displayEntry) {
+        const normalized = calculateNormalizationGain("ambience", displayEntry.normalizationDb);
+        setSessionNormalizationDisplay("ambience", {
+          currentDb: getAppliedNormalizationDb(displayEntry.normalizationDb, normalized.gain),
+          originalDb: displayEntry.normalizationDb,
+          targetDb: normalized.referenceDb,
+        }, { refresh: false });
+        applyEnvironmentVolumeToActiveAmbience({ force: true });
+      } else {
+        setSessionNormalizationDisplay("ambience", {
+          currentDb: null,
+          originalDb: null,
+          targetDb: normalizedReferenceDb,
+        }, { refresh: false });
+      }
+    } else {
+      if (ambienceState.active.size > 0) {
+        applyEnvironmentVolumeToActiveAmbience({ force: true });
+      }
+      setSessionNormalizationDisplay("ambience", {
+        currentDb: null,
+        originalDb: null,
+        targetDb: null,
+      }, { refresh: false });
+    }
+  }
+
+  if (refresh) {
+    refreshLiveControlsUi();
+  }
+}
+
+function applyStoredNormalizationReferences(referenceStore = {}, { refresh = true } = {}) {
+  const normalized = normalizeNormalizationReferenceStore(referenceStore);
+  applyStoredNormalizationReference("music", normalized.music, { refresh: false });
+  applyStoredNormalizationReference("ambience", normalized.ambience, { refresh: false });
+  if (refresh) {
+    refreshLiveControlsUi();
+  }
+}
+
+function clearSessionNormalizationState({ refresh = true } = {}) {
+  sessionNormalizationState.music.referenceDb = null;
+  sessionNormalizationState.music.manualReferenceDb = null;
+  sessionNormalizationState.ambience.referenceDb = null;
+  sessionNormalizationState.ambience.manualReferenceDb = null;
+  sessionNormalizationState.music.displayCurrentDb = null;
+  sessionNormalizationState.music.displayOriginalDb = null;
+  sessionNormalizationState.music.displayTargetDb = null;
+  sessionNormalizationState.ambience.displayCurrentDb = null;
+  sessionNormalizationState.ambience.displayOriginalDb = null;
+  sessionNormalizationState.ambience.displayTargetDb = null;
+  if (refresh) {
+    refreshLiveControlsUi();
+  }
+}
+
+function getSessionNormalizationSnapshot() {
+  return {
+    musicReferenceDb: getSessionNormalizationReferenceDb("music"),
+    musicManualReferenceDb: getSessionManualNormalizationReferenceDb("music"),
+    ambienceReferenceDb: getSessionNormalizationReferenceDb("ambience"),
+    ambienceManualReferenceDb: getSessionManualNormalizationReferenceDb("ambience"),
+    musicDisplayCurrentDb: getSessionNormalizationDisplay("music").currentDb,
+    musicDisplayOriginalDb: getSessionNormalizationDisplay("music").originalDb,
+    musicDisplayTargetDb: getSessionNormalizationDisplay("music").targetDb,
+    ambienceDisplayCurrentDb: getSessionNormalizationDisplay("ambience").currentDb,
+    ambienceDisplayOriginalDb: getSessionNormalizationDisplay("ambience").originalDb,
+    ambienceDisplayTargetDb: getSessionNormalizationDisplay("ambience").targetDb,
+  };
+}
+
+function applySessionNormalizationSnapshot(snapshot = {}) {
+  if (!snapshot || typeof snapshot !== "object") return;
+  setSessionNormalizationReferenceDb("music", snapshot.musicReferenceDb, { refresh: false });
+  setSessionManualNormalizationReferenceDb("music", snapshot.musicManualReferenceDb, { refresh: false });
+  setSessionNormalizationReferenceDb("ambience", snapshot.ambienceReferenceDb, { refresh: false });
+  setSessionManualNormalizationReferenceDb("ambience", snapshot.ambienceManualReferenceDb, { refresh: false });
+  setSessionNormalizationDisplay("music", {
+    currentDb: snapshot.musicDisplayCurrentDb,
+    originalDb: snapshot.musicDisplayOriginalDb,
+    targetDb: snapshot.musicDisplayTargetDb,
+  }, { refresh: false });
+  setSessionNormalizationDisplay("ambience", {
+    currentDb: snapshot.ambienceDisplayCurrentDb,
+    originalDb: snapshot.ambienceDisplayOriginalDb,
+    targetDb: snapshot.ambienceDisplayTargetDb,
+  }, { refresh: false });
+  refreshLiveControlsUi();
+}
+
+function isTrackNormalizationEnabled(track) {
+  return track?.normalize !== false;
+}
+
+function formatMilliHertz(value) {
+  const raw = value;
+  const numeric = raw === null || raw === undefined || raw === ""
+    ? null
+    : Number(raw);
+  if (!Number.isFinite(numeric)) return "-";
+  const linear = Math.pow(10, numeric / 20);
+  if (!Number.isFinite(linear) || linear <= 0) return "-";
+  const milliValue = linear * 1000;
+  if (milliValue < 0.001) return "<0.001 mHz";
+  if (milliValue < 1) return `${milliValue.toFixed(3)} mHz`;
+  if (milliValue < 10) return `${milliValue.toFixed(2)} mHz`;
+  if (milliValue < 100) return `${milliValue.toFixed(1)} mHz`;
+  return `${Math.round(milliValue)} mHz`;
+}
+
+function decibelToMilliHertz(value) {
+  const numeric = normalizeOptionalDecibel(value);
+  if (!Number.isFinite(numeric)) return null;
+  const linear = Math.pow(10, numeric / 20);
+  if (!Number.isFinite(linear) || linear <= 0) return null;
+  return linear * 1000;
+}
+
+function formatMilliHertzInputValue(value) {
+  const milliHertz = decibelToMilliHertz(value);
+  if (!Number.isFinite(milliHertz) || milliHertz <= 0) return "";
+  if (milliHertz < 1) return milliHertz.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+  if (milliHertz < 10) return milliHertz.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+  if (milliHertz < 100) return milliHertz.toFixed(1).replace(/0+$/, "").replace(/\.$/, "");
+  return String(Math.round(milliHertz));
+}
+
+function formatManualNormalizationInputValue(channel) {
+  const value = formatMilliHertzInputValue(getSessionManualNormalizationReferenceDb(channel));
+  return value || "";
+}
+
+function getNormalizationScanButtonLabel(channel) {
+  const channelKey = getNormalizationChannelKey(channel);
+  if (normalizationScanState[channelKey]) {
+    return t("Common.Scanning", localizedFallback("Сканирование...", "Scanning..."));
+  }
+  return channelKey === "ambience"
+    ? t("App.ScanAmbienceNormalization", localizedFallback("Сканировать треки эмбиенса", "Scan ambience tracks"))
+    : t("App.ScanMusicNormalization", localizedFallback("Сканировать треки музыки", "Scan music tracks"));
+}
+
+function parseMilliHertzInput(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value > 0 ? value : null;
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const normalized = raw.toLowerCase().replace(/mhz/g, "").replace(",", ".").trim();
+  if (!/^\d+(?:\.\d+)?$/.test(normalized)) return null;
+
+  const numeric = Number(normalized);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+}
+
+function milliHertzToDecibel(value) {
+  const milliHertz = parseMilliHertzInput(value);
+  if (!Number.isFinite(milliHertz) || milliHertz <= 0) return null;
+  return 20 * Math.log10(milliHertz / 1000);
+}
+
+function getAppliedNormalizationDb(originalDb, gain = 1) {
+  const safeOriginalDb = normalizeOptionalDecibel(originalDb);
+  const safeGain = normalizeGain(gain, 1);
+  if (!Number.isFinite(safeOriginalDb) || !(safeGain > 0)) return null;
+  return safeOriginalDb + (20 * Math.log10(safeGain));
 }
 
 function isStoragePlaylistDocument(playlist) {
@@ -689,6 +1131,7 @@ function buildPlaybackSyncSnapshot() {
     liveRate: getLiveRate(),
     liveMusicVolume: getLiveMusicVolume(),
     liveAmbienceVolume: getLiveAmbienceVolume(),
+    normalization: getSessionNormalizationSnapshot(),
   };
 
   const current = playbackState.current;
@@ -721,6 +1164,7 @@ async function applyPlaybackSyncSnapshot(snapshot) {
   await setLiveRate(liveRate, { apply: false, sync: false });
   await setLiveMusicVolume(snapshot.liveMusicVolume, { apply: true, sync: false });
   await setLiveAmbienceVolume(snapshot.liveAmbienceVolume, { apply: true, sync: false });
+  applySessionNormalizationSnapshot(snapshot.normalization);
 
   const trackId = String(snapshot.trackId ?? "");
   if (!trackId) return;
@@ -1021,6 +1465,22 @@ function injectPlaylistDirectoryRateControl(root) {
     container.append(row);
   };
 
+  const addMonitorRow = ({ labelText, valueText, container }) => {
+    const row = document.createElement("div");
+    row.classList.add("monitor-row");
+
+    const label = document.createElement("label");
+    label.textContent = labelText;
+    label.title = labelText;
+
+    const value = document.createElement("span");
+    value.classList.add("monitor-value");
+    value.textContent = valueText;
+
+    row.append(label, value);
+    container.append(row);
+  };
+
   addControlRow({
     labelText: t("App.LiveSpeed", "Speed (live)"),
     min: 0.5,
@@ -1035,6 +1495,18 @@ function injectPlaylistDirectoryRateControl(root) {
       });
       return rate;
     },
+    container: speedBody,
+  });
+
+  addMonitorRow({
+    labelText: t("App.MusicNormalization", localizedFallback("РќРѕСЂРј. РјСѓР·С‹РєРё:", "Norm. music:")),
+    valueText: getNormalizationMonitorLabel("music"),
+    container: speedBody,
+  });
+
+  addMonitorRow({
+    labelText: t("App.AmbienceNormalization", localizedFallback("РќРѕСЂРј. СЌРјР±РёРµРЅСЃР°:", "Norm. ambience:")),
+    valueText: getNormalizationMonitorLabel("ambience"),
     container: speedBody,
   });
 
@@ -1589,6 +2061,20 @@ function refreshManagerRuntimeUi() {
   }
 
   syncManagerRangeControl(root, "[data-action='set-live-rate']", ".ts-dj-live-rate-value", getLiveRate(), formatRate);
+  syncManagerTextControl(root, "[data-normalization-label='music']", t("App.MusicNormalization", localizedFallback("РќРѕСЂРј. РјСѓР·С‹РєРё:", "Norm. music:")));
+  syncManagerTextControl(root, "[data-normalization-label='ambience']", t("App.AmbienceNormalization", localizedFallback("РќРѕСЂРј. СЌРјР±РёРµРЅСЃР°:", "Norm. ambience:")));
+  syncManagerTextControl(root, "[data-normalization-monitor='music']", getNormalizationMonitorLabel("music"));
+  syncManagerTextControl(root, "[data-normalization-monitor='ambience']", getNormalizationMonitorLabel("ambience"));
+  syncManagerInputControl(root, "[data-normalization-input='music']", formatManualNormalizationInputValue("music"));
+  syncManagerInputControl(root, "[data-normalization-input='ambience']", formatManualNormalizationInputValue("ambience"));
+  syncManagerButtonControl(root, "[data-normalization-scan-button='music']", {
+    label: getNormalizationScanButtonLabel("music"),
+    disabled: normalizationScanState.music,
+  });
+  syncManagerButtonControl(root, "[data-normalization-scan-button='ambience']", {
+    label: getNormalizationScanButtonLabel("ambience"),
+    disabled: normalizationScanState.ambience,
+  });
   syncManagerRangeControl(root, "[data-action='set-live-music-volume']", ".ts-dj-live-music-volume-value", getLiveMusicVolume(), formatVolumePercent);
   syncManagerRangeControl(root, "[data-action='set-live-ambience-volume']", ".ts-dj-live-ambience-volume-value", getLiveAmbienceVolume(), formatVolumePercent);
 
@@ -1660,6 +2146,34 @@ function syncManagerRangeControl(root, inputSelector, labelSelector, value, form
   const label = root.querySelector(labelSelector);
   if (label) {
     label.textContent = format(value);
+  }
+}
+
+function syncManagerTextControl(root, selector, value) {
+  const target = root.querySelector(selector);
+  if (target) {
+    target.textContent = String(value ?? "");
+  }
+}
+
+function syncManagerInputControl(root, selector, value) {
+  const input = root.querySelector(selector);
+  if (!(input instanceof HTMLInputElement)) return;
+  if (document.activeElement === input) return;
+  input.value = String(value ?? "");
+}
+
+function syncManagerButtonControl(root, selector, {
+  label = null,
+  disabled = null,
+} = {}) {
+  const button = root.querySelector(selector);
+  if (!(button instanceof HTMLButtonElement)) return;
+  if (label !== null) {
+    button.textContent = String(label);
+  }
+  if (disabled !== null) {
+    button.disabled = Boolean(disabled);
   }
 }
 
@@ -2028,17 +2542,18 @@ function bindSegmentLoopToSound(sound, { enabled = false, start = 0, end = null,
 
 function applySoundVolume(sound, volume) {
   if (!sound) return;
-  const safeVolume = clampNumber(Number(volume) || 0, 0, 1);
+  const safeGain = clampNumber(Number(volume) || 0, 0, MAX_SOUND_GAIN);
+  const safeMediaVolume = clampNumber(safeGain, 0, 1);
 
   try {
-    sound.volume = safeVolume;
+    sound.volume = safeMediaVolume;
   } catch (_error) {
     // no-op
   }
 
   try {
     if (sound.element && typeof sound.element.volume === "number") {
-      sound.element.volume = safeVolume;
+      sound.element.volume = safeMediaVolume;
     }
   } catch (_error) {
     // no-op
@@ -2049,17 +2564,1353 @@ function applySoundVolume(sound, volume) {
     if (!node?.gain) return;
 
     if (typeof node.gain.value === "number") {
-      node.gain.value = safeVolume;
+      node.gain.value = safeGain;
       return;
     }
 
     const currentTime = Number(sound.context?.currentTime ?? 0);
     if (typeof node.gain.setValueAtTime === "function" && Number.isFinite(currentTime)) {
-      node.gain.setValueAtTime(safeVolume, currentTime);
+      node.gain.setValueAtTime(safeGain, currentTime);
     }
   } catch (_error) {
     // no-op
   }
+}
+
+function normalizeGain(value, fallback = 1) {
+  const numeric = Number(value);
+  return clampNumber(Number.isFinite(numeric) ? numeric : fallback, 0, MAX_SOUND_GAIN);
+}
+
+function getEffectiveMusicVolume({
+  liveMusicVolume = getLiveMusicVolume(),
+  normalizationGain = 1,
+} = {}) {
+  return clampNumber(normalizeVolume(liveMusicVolume) * normalizeGain(normalizationGain), 0, MAX_SOUND_GAIN);
+}
+
+function getNormalizationMonitorLabel(channel) {
+  const display = getSessionNormalizationDisplay(channel);
+  return localizedFallback(
+    `трек ${formatMilliHertz(display.originalDb)} | сейчас ${formatMilliHertz(display.currentDb)} | цель ${formatMilliHertz(display.targetDb)}`,
+    `track ${formatMilliHertz(display.originalDb)} | current ${formatMilliHertz(display.currentDb)} | target ${formatMilliHertz(display.targetDb)}`,
+  );
+}
+
+function getTrackNormalizationCacheKey(track, filePath) {
+  const clipStartRaw = parseTimeInput(track?.start);
+  const clipStart = Number.isFinite(clipStartRaw) && clipStartRaw >= 0 ? clipStartRaw : 0;
+  const clipEndRaw = parseTimeInput(track?.end);
+  const clipEnd = Number.isFinite(clipEndRaw) && clipEndRaw > clipStart ? clipEndRaw : null;
+  return [
+    NORMALIZATION_ANALYSIS_VERSION,
+    filePath,
+    clipStart.toFixed(3),
+    Number.isFinite(clipEnd) ? clipEnd.toFixed(3) : "end",
+    NORMALIZATION_SCAN_WINDOW_SEC,
+    NORMALIZATION_SCAN_WINDOW_COUNT,
+    NORMALIZATION_SCAN_SAMPLE_STEP,
+  ].join("|");
+}
+
+function exportCurrentNormalizationCacheStore() {
+  const currentVersionPrefix = `${NORMALIZATION_ANALYSIS_VERSION}|`;
+  const normalized = {};
+
+  for (const [key, value] of normalizationAnalysisCache.entries()) {
+    const cacheKey = String(key ?? "");
+    const numeric = Number(value);
+    if (!cacheKey.startsWith(currentVersionPrefix) || !Number.isFinite(numeric)) continue;
+    normalized[cacheKey] = numeric;
+  }
+
+  return normalized;
+}
+
+function getStoredTrackNormalizationLoudnessDb(track, filePath) {
+  if (!track || !filePath) return null;
+  const version = Number(track.normalizationAnalysisVersion);
+  const cacheKey = getTrackNormalizationCacheKey(track, filePath);
+  const storedKey = String(track.normalizationCacheKey ?? "");
+  const loudnessDb = Number(track.normalizationLoudnessDb);
+  if (version !== NORMALIZATION_ANALYSIS_VERSION) return null;
+  if (storedKey !== cacheKey) return null;
+  return Number.isFinite(loudnessDb) ? loudnessDb : null;
+}
+
+function updateTrackNormalizationMetadata(track, filePath, loudnessDb, { channel = null } = {}) {
+  const numeric = Number(loudnessDb);
+  if (!track || !filePath || !Number.isFinite(numeric)) return null;
+
+  const cacheKey = getTrackNormalizationCacheKey(track, filePath);
+  const applyToTrack = (target) => {
+    if (!target || typeof target !== "object") return;
+    target.normalizationAnalysisVersion = NORMALIZATION_ANALYSIS_VERSION;
+    target.normalizationCacheKey = cacheKey;
+    target.normalizationLoudnessDb = numeric;
+  };
+
+  applyToTrack(track);
+
+  const collections = channel === "music"
+    ? [storageState.tracks]
+    : channel === "ambience"
+      ? [storageState.ambienceTracks]
+      : [storageState.tracks, storageState.ambienceTracks];
+
+  for (const collection of collections) {
+    const index = collection.findIndex((entry) => entry?.id === track?.id);
+    if (index === -1) continue;
+    applyToTrack(collection[index]);
+    break;
+  }
+
+  return cacheKey;
+}
+
+function getCachedTrackLoudnessDb(track, filePath) {
+  const storedValue = getStoredTrackNormalizationLoudnessDb(track, filePath);
+  if (Number.isFinite(storedValue)) return storedValue;
+  const cacheKey = getTrackNormalizationCacheKey(track, filePath);
+  const value = Number(normalizationAnalysisCache.get(cacheKey));
+  return Number.isFinite(value) ? value : null;
+}
+
+function setCachedTrackLoudnessDb(track, filePath, loudnessDb, { channel = null } = {}) {
+  const numeric = Number(loudnessDb);
+  if (!Number.isFinite(numeric)) return;
+  const cacheKey = updateTrackNormalizationMetadata(track, filePath, numeric, { channel })
+    ?? getTrackNormalizationCacheKey(track, filePath);
+  normalizationAnalysisCache.set(cacheKey, numeric);
+  if (!storageState.normalizationCache || typeof storageState.normalizationCache !== "object") {
+    storageState.normalizationCache = {};
+  }
+  storageState.normalizationCache[cacheKey] = numeric;
+}
+
+function logNormalizationDebug(stage, {
+  channel = "music",
+  track = null,
+  filePath = "",
+  extra = {},
+} = {}) {
+  if (!NORMALIZATION_DEBUG_LOGS) return;
+  console.warn(`${MODULE_ID} | normalization ${stage}`, {
+    channel,
+    trackId: track?.id ?? null,
+    trackName: track?.name ?? null,
+    filePath,
+    ...extra,
+  });
+}
+
+function getNormalizationTargetDurationSec(maxDurationSec) {
+  const safeDuration = Number.isFinite(maxDurationSec) ? Math.max(0, Number(maxDurationSec)) : MAX_NORMALIZATION_ANALYSIS_SEC;
+  if (!(safeDuration > 0)) return 0;
+  if (safeDuration < MAX_NORMALIZATION_ANALYSIS_SEC) {
+    return safeDuration / 2;
+  }
+  return MAX_NORMALIZATION_ANALYSIS_SEC;
+}
+
+function getNormalizationProbeOffsets(clipStart, clipEnd, analysisDuration) {
+  const safeClipStart = Number.isFinite(clipStart) ? Math.max(0, Number(clipStart)) : 0;
+  const safeAnalysisDuration = Number.isFinite(analysisDuration)
+    ? Math.max(0.05, Number(analysisDuration))
+    : NORMALIZATION_SCAN_WINDOW_SEC;
+  const safeClipEnd = Number.isFinite(clipEnd) && clipEnd > safeClipStart
+    ? Number(clipEnd)
+    : safeClipStart + safeAnalysisDuration;
+  const availableDuration = Math.max(0.05, safeClipEnd - safeClipStart);
+  const windowDuration = Math.min(safeAnalysisDuration, availableDuration);
+  const maxOffset = Math.max(safeClipStart, safeClipEnd - windowDuration);
+  const offsets = [];
+  const seen = new Set();
+
+  const pushOffset = (value) => {
+    const numeric = clampNumber(Number(value), safeClipStart, maxOffset);
+    const cacheKey = numeric.toFixed(3);
+    if (seen.has(cacheKey)) return;
+    seen.add(cacheKey);
+    offsets.push(numeric);
+  };
+
+  const positions = Math.max(1, NORMALIZATION_SCAN_WINDOW_COUNT);
+  if (positions === 1) {
+    pushOffset(safeClipStart + ((availableDuration - windowDuration) / 2));
+  } else {
+    const spread = Math.max(0, availableDuration - windowDuration);
+    for (let index = 0; index < positions; index += 1) {
+      const ratio = index / (positions - 1);
+      pushOffset(safeClipStart + (spread * ratio));
+    }
+  }
+
+  if (!offsets.length) {
+    pushOffset(safeClipStart);
+  }
+
+  return offsets;
+}
+
+function getWorkingBlockRms(tracker) {
+  const values = Array.isArray(tracker?.blockRmsValues) ? tracker.blockRmsValues.filter((value) => Number.isFinite(value) && value > 0) : [];
+  if (!values.length) return null;
+  values.sort((left, right) => right - left);
+  const takeCount = Math.max(1, Math.ceil(values.length * NORMALIZATION_TOP_BLOCK_PORTION));
+  const selected = values.slice(0, takeCount);
+  const meanSquare = selected.reduce((sum, value) => sum + (value * value), 0) / selected.length;
+  const rms = Math.sqrt(meanSquare);
+  return Number.isFinite(rms) && rms > 0 ? rms : null;
+}
+
+function analyzeSamplesSparse(channelData, step = NORMALIZATION_SCAN_SAMPLE_STEP) {
+  let peak = 0;
+  let sumSq = 0;
+  let count = 0;
+
+  for (let index = 0; index < channelData.length; index += step) {
+    const sample = channelData[index];
+    const absolute = Math.abs(sample);
+    if (absolute > peak) peak = absolute;
+    sumSq += sample * sample;
+    count += 1;
+  }
+
+  if (!count) return null;
+
+  const rms = Math.sqrt(sumSq / count);
+  const rmsDb = rms > 1e-9 ? 20 * Math.log10(rms) : -120;
+  const peakDb = peak > 1e-9 ? 20 * Math.log10(peak) : -120;
+  return { rmsDb, peakDb };
+}
+
+function combineSparseAnalyses(analyses = []) {
+  const valid = analyses.filter((analysis) =>
+    analysis
+    && Number.isFinite(analysis.rmsDb)
+    && Number.isFinite(analysis.peakDb)
+  );
+  if (!valid.length) return null;
+
+  let peak = 0;
+  let sumSq = 0;
+  for (const analysis of valid) {
+    const rms = Math.pow(10, analysis.rmsDb / 20);
+    const currentPeak = Math.pow(10, analysis.peakDb / 20);
+    if (currentPeak > peak) peak = currentPeak;
+    sumSq += rms * rms;
+  }
+
+  const rms = Math.sqrt(sumSq / valid.length);
+  return {
+    rmsDb: rms > 1e-9 ? 20 * Math.log10(rms) : -120,
+    peakDb: peak > 1e-9 ? 20 * Math.log10(peak) : -120,
+  };
+}
+
+function getTrackNormalizationClipRange(track, durationSec = null) {
+  const clipStartRaw = parseTimeInput(track?.start);
+  const clipStart = Number.isFinite(clipStartRaw) && clipStartRaw >= 0 ? clipStartRaw : 0;
+  const clipEndRaw = parseTimeInput(track?.end);
+  const clipEnd = Number.isFinite(clipEndRaw) && clipEndRaw > clipStart
+    ? clipEndRaw
+    : (Number.isFinite(durationSec) && durationSec > clipStart ? Number(durationSec) : null);
+  return { clipStart, clipEnd };
+}
+
+function getNormalizationMediaError(audio) {
+  const code = Number(audio?.error?.code ?? 0);
+  const details = audio?.error?.message ? `: ${audio.error.message}` : "";
+  switch (code) {
+    case 1: return `Media aborted${details}`;
+    case 2: return `Media network error${details}`;
+    case 3: return `Media decode error${details}`;
+    case 4: return `Media source unsupported${details}`;
+    default: return details ? `Media error${details}` : "Media error";
+  }
+}
+
+function cleanupNormalizationMediaAnalyzer(analyzer) {
+  if (!analyzer) return;
+
+  const {
+    audio,
+    sourceNode,
+    analyser,
+    silentGain,
+  } = analyzer;
+
+  try {
+    if (audio && typeof audio.pause === "function") {
+      audio.pause();
+    }
+  } catch (_error) {
+    // no-op
+  }
+
+  disconnectAudioNode(sourceNode, analyser);
+  disconnectAudioNode(analyser, silentGain);
+  disconnectAudioNode(silentGain);
+
+  try {
+    if (audio) {
+      audio.removeAttribute("src");
+      audio.load();
+    }
+  } catch (_error) {
+    // no-op
+  }
+}
+
+async function waitForNormalizationMediaState(audio, {
+  timeoutMs = 10000,
+  predicate = null,
+  events = ["loadedmetadata", "canplay", "loadeddata"],
+} = {}) {
+  if (!audio) throw new Error("No media element available");
+  if (typeof predicate === "function" && predicate()) return;
+
+  await new Promise((resolve, reject) => {
+    let settled = false;
+    let timeoutId = null;
+    const cleanups = [];
+
+    const finish = (handler) => {
+      if (settled) return;
+      settled = true;
+      if (timeoutId) window.clearTimeout(timeoutId);
+      for (const cleanup of cleanups) cleanup();
+      handler();
+    };
+
+    const onSuccess = () => finish(resolve);
+    const onError = () => finish(() => reject(new Error(getNormalizationMediaError(audio))));
+    const onTimeout = () => finish(() => reject(new Error(`Media state timeout after ${timeoutMs}ms`)));
+
+    for (const eventName of events) {
+      const handler = () => {
+        if (typeof predicate === "function" && !predicate()) return;
+        onSuccess();
+      };
+      audio.addEventListener(eventName, handler);
+      cleanups.push(() => audio.removeEventListener(eventName, handler));
+    }
+
+    audio.addEventListener("error", onError);
+    cleanups.push(() => audio.removeEventListener("error", onError));
+    timeoutId = window.setTimeout(onTimeout, timeoutMs);
+  });
+}
+
+async function createNormalizationAnalysisResources(channel = "music") {
+  const ContextCtor = globalThis.AudioContext ?? globalThis.webkitAudioContext ?? null;
+  const sharedContext = getAudioContextForChannel(channel);
+  const context = (
+    sharedContext?.createAnalyser
+    && typeof sharedContext?.createMediaElementSource === "function"
+  )
+    ? sharedContext
+    : (ContextCtor ? new ContextCtor() : null);
+
+  if (!context?.createAnalyser || typeof context.createMediaElementSource !== "function" || !context.destination) {
+    throw new Error("No media-element audio analyser available");
+  }
+
+  if (context.state === "suspended" && typeof context.resume === "function") {
+    try {
+      await context.resume();
+    } catch (_error) {
+      // no-op
+    }
+  }
+
+  return {
+    context,
+    temporary: context !== sharedContext,
+  };
+}
+
+async function disposeNormalizationAnalysisResources(resources) {
+  if (!resources?.temporary || typeof resources.context?.close !== "function") return;
+  try {
+    await resources.context.close();
+  } catch (_error) {
+    // no-op
+  }
+}
+
+async function createNormalizationMediaAnalyzer(filePath, resources) {
+  const audio = new Audio();
+  audio.preload = "auto";
+  audio.muted = false;
+  audio.volume = 1;
+  audio.crossOrigin = "anonymous";
+  audio.src = filePath;
+  audio.load();
+
+  await waitForNormalizationMediaState(audio, {
+    timeoutMs: 12000,
+    predicate: () => Number.isFinite(audio.duration) && audio.duration > 0,
+    events: ["loadedmetadata", "durationchange", "loadeddata", "canplay"],
+  });
+
+  const analyser = resources.context.createAnalyser();
+  analyser.fftSize = 2048;
+  analyser.smoothingTimeConstant = 0;
+  const silentGain = resources.context.createGain();
+  silentGain.gain.value = 0;
+  const sourceNode = resources.context.createMediaElementSource(audio);
+  sourceNode.connect(analyser);
+  analyser.connect(silentGain);
+  silentGain.connect(resources.context.destination);
+
+  return {
+    audio,
+    sourceNode,
+    analyser,
+    silentGain,
+    floatData: typeof analyser.getFloatTimeDomainData === "function"
+      ? new Float32Array(analyser.fftSize)
+      : null,
+    byteData: typeof analyser.getFloatTimeDomainData === "function"
+      ? null
+      : new Uint8Array(analyser.fftSize),
+  };
+}
+
+async function seekNormalizationMediaElement(audio, timeSec) {
+  if (!audio) throw new Error("No media element available");
+
+  const safeTarget = clampNumber(
+    Number(timeSec) || 0,
+    0,
+    Number.isFinite(audio.duration) && audio.duration > 0 ? Math.max(0, audio.duration - 0.01) : Number.MAX_SAFE_INTEGER,
+  );
+
+  if (Math.abs((Number(audio.currentTime) || 0) - safeTarget) <= 0.01) return safeTarget;
+
+  await new Promise((resolve, reject) => {
+    let settled = false;
+    let timeoutId = null;
+
+    const finish = (handler) => {
+      if (settled) return;
+      settled = true;
+      if (timeoutId) window.clearTimeout(timeoutId);
+      audio.removeEventListener("seeked", onSeeked);
+      audio.removeEventListener("error", onError);
+      handler();
+    };
+
+    const onSeeked = () => finish(resolve);
+    const onError = () => finish(() => reject(new Error(getNormalizationMediaError(audio))));
+
+    audio.addEventListener("seeked", onSeeked);
+    audio.addEventListener("error", onError);
+    timeoutId = window.setTimeout(() => {
+      finish(() => reject(new Error(`Media seek timeout after 4000ms (${safeTarget.toFixed(3)}s)`)));
+    }, 4000);
+
+    try {
+      audio.currentTime = safeTarget;
+    } catch (error) {
+      finish(() => reject(error));
+    }
+  });
+
+  await waitForNormalizationMediaState(audio, {
+    timeoutMs: 4000,
+    predicate: () => audio.readyState >= (globalThis.HTMLMediaElement?.HAVE_CURRENT_DATA ?? 2),
+    events: ["loadeddata", "canplay", "canplaythrough", "timeupdate"],
+  });
+
+  return safeTarget;
+}
+
+function sampleSparseAnalyserFrame(analyser, floatData = null, byteData = null) {
+  if (!analyser) return null;
+
+  if (floatData && typeof analyser.getFloatTimeDomainData === "function") {
+    analyser.getFloatTimeDomainData(floatData);
+    return analyzeSamplesSparse(floatData, NORMALIZATION_SCAN_SAMPLE_STEP);
+  }
+
+  if (byteData && typeof analyser.getByteTimeDomainData === "function") {
+    analyser.getByteTimeDomainData(byteData);
+    let peak = 0;
+    let sumSq = 0;
+    let count = 0;
+
+    for (let index = 0; index < byteData.length; index += NORMALIZATION_SCAN_SAMPLE_STEP) {
+      const sample = (byteData[index] - 128) / 128;
+      const absolute = Math.abs(sample);
+      if (absolute > peak) peak = absolute;
+      sumSq += sample * sample;
+      count += 1;
+    }
+
+    if (!count) return null;
+
+    const rms = Math.sqrt(sumSq / count);
+    return {
+      rmsDb: rms > 1e-9 ? 20 * Math.log10(rms) : -120,
+      peakDb: peak > 1e-9 ? 20 * Math.log10(peak) : -120,
+    };
+  }
+
+  return null;
+}
+
+async function analyzeNormalizationMediaWindow(analyzer, startSec, durationSec) {
+  if (!analyzer?.audio || !(durationSec > 0)) return null;
+
+  const windowDuration = Math.max(0.05, Number(durationSec) || 0);
+  const startTime = await seekNormalizationMediaElement(analyzer.audio, startSec);
+  const targetEnd = Math.min(
+    Number.isFinite(analyzer.audio.duration) ? analyzer.audio.duration : startTime + windowDuration,
+    startTime + windowDuration,
+  );
+  if (!(targetEnd > startTime)) return null;
+
+  analyzer.audio.playbackRate = PRELOAD_NORMALIZATION_RATE;
+  analyzer.audio.defaultPlaybackRate = PRELOAD_NORMALIZATION_RATE;
+  const startedAtMs = Date.now();
+  const maxWallMs = ((windowDuration / PRELOAD_NORMALIZATION_RATE) * 1000) + 1200;
+  const frameAnalyses = [];
+
+  try {
+    await analyzer.audio.play();
+  } catch (error) {
+    throw new Error(`Failed to play media window: ${error?.message ?? error}`);
+  }
+
+  try {
+    while ((Number(analyzer.audio.currentTime) || 0) < (targetEnd - 0.01)) {
+      const frame = sampleSparseAnalyserFrame(analyzer.analyser, analyzer.floatData, analyzer.byteData);
+      if (frame) {
+        frameAnalyses.push(frame);
+      }
+
+      if (analyzer.audio.ended) break;
+      if ((Date.now() - startedAtMs) >= maxWallMs) break;
+      await waitMs(NORMALIZATION_POLL_MS);
+    }
+
+    const finalFrame = sampleSparseAnalyserFrame(analyzer.analyser, analyzer.floatData, analyzer.byteData);
+    if (finalFrame) {
+      frameAnalyses.push(finalFrame);
+    }
+  } finally {
+    try {
+      analyzer.audio.pause();
+    } catch (_error) {
+      // no-op
+    }
+  }
+
+  return combineSparseAnalyses(frameAnalyses);
+}
+
+async function scanTrackNormalizationLoudnessWithAnalyzer(track, filePath, analyzer, { channel = "music" } = {}) {
+  const { clipStart, clipEnd } = getTrackNormalizationClipRange(track, analyzer?.audio?.duration ?? null);
+  const availableDuration = Number.isFinite(clipEnd) && clipEnd > clipStart
+    ? (clipEnd - clipStart)
+    : Math.max(0.05, (analyzer?.audio?.duration ?? 0) - clipStart);
+  if (!(availableDuration > 0)) return null;
+
+  const windowDuration = Math.max(0.05, Math.min(NORMALIZATION_SCAN_WINDOW_SEC, availableDuration));
+  const windowOffsets = getNormalizationProbeOffsets(clipStart, clipEnd, windowDuration);
+  const windowAnalyses = [];
+
+  for (const offset of windowOffsets) {
+    const analysis = await analyzeNormalizationMediaWindow(analyzer, offset, windowDuration);
+    if (analysis) {
+      windowAnalyses.push(analysis);
+    }
+  }
+
+  const loudnessDb = resolveSparseWindowLoudnessDb(windowAnalyses);
+  if (Number.isFinite(loudnessDb)) {
+    setCachedTrackLoudnessDb(track, filePath, loudnessDb, { channel });
+    return loudnessDb;
+  }
+  return null;
+}
+
+function resolveSparseWindowLoudnessDb(windowAnalyses = []) {
+  const minRmsDb = 20 * Math.log10(MIN_NORMALIZATION_RMS);
+  const minPeakDb = 20 * Math.log10(MIN_NORMALIZATION_ACTIVE_SAMPLE);
+  const valid = windowAnalyses
+    .filter((analysis) =>
+      analysis
+      && Number.isFinite(analysis.rmsDb)
+      && Number.isFinite(analysis.peakDb)
+      && analysis.rmsDb >= minRmsDb
+      && analysis.peakDb >= minPeakDb
+    )
+    .sort((left, right) => right.rmsDb - left.rmsDb);
+  if (!valid.length) return null;
+
+  const takeCount = Math.max(1, Math.min(valid.length, Math.ceil(valid.length * 0.67)));
+  const selected = valid.slice(0, takeCount);
+  const sumSq = selected.reduce((sum, analysis) => {
+    const rms = Math.pow(10, analysis.rmsDb / 20);
+    return sum + (rms * rms);
+  }, 0);
+  const rms = Math.sqrt(sumSq / selected.length);
+  return rms > 1e-9 ? 20 * Math.log10(rms) : null;
+}
+
+async function scanTrackNormalizationLoudness(track, filePath, {
+  channel = "music",
+  analysisResources = null,
+} = {}) {
+  const cachedLoudness = getCachedTrackLoudnessDb(track, filePath);
+  if (Number.isFinite(cachedLoudness)) {
+    return cachedLoudness;
+  }
+
+  const ownResources = !analysisResources;
+  const resources = analysisResources ?? await createNormalizationAnalysisResources(channel);
+
+  try {
+    const analyzer = await createNormalizationMediaAnalyzer(filePath, resources);
+    try {
+      return await scanTrackNormalizationLoudnessWithAnalyzer(track, filePath, analyzer, { channel });
+    } finally {
+      cleanupNormalizationMediaAnalyzer(analyzer);
+    }
+  } finally {
+    if (ownResources) {
+      await disposeNormalizationAnalysisResources(resources);
+    }
+  }
+}
+
+async function scanNormalizationTracks(channel) {
+  const channelKey = getNormalizationChannelKey(channel);
+  if (normalizationScanState[channelKey]) return false;
+
+  normalizationScanState[channelKey] = true;
+  refreshLiveControlsUi();
+  let analysisResources = null;
+
+  try {
+    const trackList = channelKey === "ambience" ? getAmbienceTracks() : getTracks();
+    const fileMap = new Map(getFiles().map((file) => [file.id, file]));
+    const candidates = trackList
+      .map((track) => ({
+        track,
+        filePath: fileMap.get(track.fileId)?.path ?? "",
+      }))
+      .filter(({ track, filePath }) => isTrackNormalizationEnabled(track) && filePath);
+
+    if (!candidates.length) {
+      ui.notifications.warn(
+        channelKey === "ambience"
+          ? localizedFallback("TS-DJ-MUSIC: нет треков эмбиенса для сканирования нормализации.", "TS-DJ-MUSIC: no ambience tracks available for normalization scan.")
+          : localizedFallback("TS-DJ-MUSIC: нет музыкальных треков для сканирования нормализации.", "TS-DJ-MUSIC: no music tracks available for normalization scan."),
+      );
+      return false;
+    }
+
+    let scanned = 0;
+    let skipped = 0;
+    let failed = 0;
+    const tracksByFile = new Map();
+
+    for (const { track, filePath } of candidates) {
+      if (Number.isFinite(getCachedTrackLoudnessDb(track, filePath))) {
+        skipped += 1;
+        continue;
+      }
+      const groupedTracks = tracksByFile.get(filePath) ?? [];
+      groupedTracks.push(track);
+      tracksByFile.set(filePath, groupedTracks);
+    }
+
+    if (!tracksByFile.size) {
+      const summary = channelKey === "ambience"
+        ? localizedFallback(
+          `TS-DJ-MUSIC: СЃРєР°РЅ СЌРјР±РёРµРЅСЃР° Р·Р°РІРµСЂС€С‘РЅ. РЈСЃРїРµС€РЅРѕ ${scanned}, РїСЂРѕРїСѓС‰РµРЅРѕ ${skipped}, РѕС€РёР±РѕРє ${failed}.`,
+          `TS-DJ-MUSIC: ambience scan finished. Scanned ${scanned}, skipped ${skipped}, failed ${failed}.`,
+        )
+        : localizedFallback(
+          `TS-DJ-MUSIC: СЃРєР°РЅ РјСѓР·С‹РєРё Р·Р°РІРµСЂС€С‘РЅ. РЈСЃРїРµС€РЅРѕ ${scanned}, РїСЂРѕРїСѓС‰РµРЅРѕ ${skipped}, РѕС€РёР±РѕРє ${failed}.`,
+          `TS-DJ-MUSIC: music scan finished. Scanned ${scanned}, skipped ${skipped}, failed ${failed}.`,
+        );
+      ui.notifications.info?.(summary);
+      return true;
+    }
+
+    analysisResources = await createNormalizationAnalysisResources(channelKey);
+    for (const [filePath, tracks] of tracksByFile.entries()) {
+      let analyzer = null;
+      try {
+        analyzer = await createNormalizationMediaAnalyzer(filePath, analysisResources);
+        for (const track of tracks) {
+          try {
+            const loudnessDb = await scanTrackNormalizationLoudnessWithAnalyzer(track, filePath, analyzer, {
+              channel: channelKey,
+            });
+            if (Number.isFinite(loudnessDb)) {
+              scanned += 1;
+            } else {
+              skipped += 1;
+            }
+          } catch (error) {
+            failed += 1;
+            console.warn(`${MODULE_ID} | normalization scan failed`, {
+              channel: channelKey,
+              trackId: track?.id ?? null,
+              trackName: track?.name ?? null,
+              filePath,
+              error,
+            });
+          }
+
+          await waitMs(0);
+        }
+      } catch (error) {
+        failed += 1;
+        skipped += tracks.length;
+        console.warn(`${MODULE_ID} | normalization scan failed`, {
+          channel: channelKey,
+          trackId: null,
+          trackName: null,
+          filePath,
+          error,
+        });
+      } finally {
+        cleanupNormalizationMediaAnalyzer(analyzer);
+      }
+    }
+
+    if (scanned > 0) {
+      if (channelKey === "ambience") {
+        await setAmbienceTracks(storageState.ambienceTracks);
+      } else {
+        await setTracks(storageState.tracks);
+      }
+    }
+
+    const summary = channelKey === "ambience"
+      ? localizedFallback(
+        `TS-DJ-MUSIC: скан эмбиенса завершён. Успешно ${scanned}, пропущено ${skipped}, ошибок ${failed}.`,
+        `TS-DJ-MUSIC: ambience scan finished. Scanned ${scanned}, skipped ${skipped}, failed ${failed}.`,
+      )
+      : localizedFallback(
+        `TS-DJ-MUSIC: скан музыки завершён. Успешно ${scanned}, пропущено ${skipped}, ошибок ${failed}.`,
+        `TS-DJ-MUSIC: music scan finished. Scanned ${scanned}, skipped ${skipped}, failed ${failed}.`,
+      );
+    ui.notifications[failed > 0 ? "warn" : "info"]?.(summary);
+    return failed === 0;
+  } finally {
+    await disposeNormalizationAnalysisResources(analysisResources);
+    normalizationScanState[channelKey] = false;
+    refreshLiveControlsUi();
+  }
+}
+
+function calculateNormalizationGain(channel, loudnessDb) {
+  const numeric = Number(loudnessDb);
+  if (!Number.isFinite(numeric)) {
+    return {
+      gain: 1,
+      referenceDb: getSessionNormalizationReferenceDb(channel),
+    };
+  }
+
+  let referenceDb = getSessionNormalizationReferenceDb(channel);
+  if (!Number.isFinite(referenceDb)) {
+    return {
+      gain: 1,
+      referenceDb: null,
+    };
+  }
+
+  const rawGain = Math.pow(10, (referenceDb - numeric) / 20);
+  return {
+    gain: clampNumber(rawGain, MIN_NORMALIZATION_GAIN, MAX_NORMALIZATION_GAIN),
+    referenceDb,
+  };
+}
+
+function resolveTrackNormalization(track, filePath, { channel = "music" } = {}) {
+  const normalizationEnabled = isTrackNormalizationEnabled(track);
+  if (!normalizationEnabled) {
+    setSessionNormalizationDisplay(channel, {
+      currentDb: null,
+      originalDb: null,
+      targetDb: getSessionNormalizationReferenceDb(channel),
+    }, { refresh: false });
+    return {
+      enabled: false,
+      gain: 1,
+      loudnessDb: null,
+      referenceDb: getSessionNormalizationReferenceDb(channel),
+      needsAnalysis: false,
+    };
+  }
+
+  const loudnessDb = getCachedTrackLoudnessDb(track, filePath);
+  if (Number.isFinite(loudnessDb)) {
+    const normalized = calculateNormalizationGain(channel, loudnessDb);
+    setSessionNormalizationDisplay(channel, {
+      currentDb: getAppliedNormalizationDb(loudnessDb, normalized.gain),
+      originalDb: loudnessDb,
+      targetDb: normalized.referenceDb,
+    }, { refresh: false });
+    return {
+      enabled: true,
+      gain: normalized.gain,
+      loudnessDb,
+      referenceDb: normalized.referenceDb,
+      needsAnalysis: false,
+    };
+  }
+
+  setSessionNormalizationDisplay(channel, {
+    currentDb: null,
+    originalDb: null,
+    targetDb: getSessionNormalizationReferenceDb(channel),
+  }, { refresh: false });
+  return {
+    enabled: true,
+    gain: 1,
+    loudnessDb: null,
+    referenceDb: getSessionNormalizationReferenceDb(channel),
+    needsAnalysis: false,
+  };
+}
+
+function disconnectAudioNode(node, target = undefined) {
+  if (!node || typeof node.disconnect !== "function") return;
+  try {
+    if (target !== undefined) {
+      node.disconnect(target);
+      return;
+    }
+    node.disconnect();
+  } catch (_error) {
+    // no-op
+  }
+}
+
+function clearNormalizationBindRetry(entry) {
+  if (!entry?.normalizationBindRetryId) return;
+  window.clearInterval(entry.normalizationBindRetryId);
+  entry.normalizationBindRetryId = null;
+}
+
+function clearNormalizationTracker(entry, { clearRetry = true } = {}) {
+  if (clearRetry) {
+    clearNormalizationBindRetry(entry);
+  }
+  const tracker = entry?.normalizationTracker;
+  if (!tracker) return;
+  if (tracker.intervalId) {
+    window.clearInterval(tracker.intervalId);
+  }
+  disconnectAudioNode(tracker.sourceNode, tracker.analyser);
+  disconnectAudioNode(tracker.analyser);
+  disconnectAudioNode(tracker.silentGain);
+  entry.normalizationTracker = null;
+}
+
+function sampleNormalizationTracker(entry, track, filePath, { channel = "music", onVolumeChange = null } = {}) {
+  const tracker = entry?.normalizationTracker;
+  if (!tracker || entry?.paused || entry?.ending) {
+    clearNormalizationTracker(entry);
+    return;
+  }
+
+  const directTime = getCurrentAbsoluteTime(entry) ?? getEstimatedAbsoluteTime(entry);
+  const fallbackElapsedSec = Math.max(0, (Date.now() - tracker.startedAtMs) / 1000);
+  const analyzedSec = Number.isFinite(directTime)
+    ? Math.max(0, directTime - tracker.startTime)
+    : fallbackElapsedSec;
+
+  try {
+    if (tracker.floatData) {
+      tracker.analyser.getFloatTimeDomainData(tracker.floatData);
+      let blockSumSquares = 0;
+      let blockPeak = 0;
+      let blockSampleCount = 0;
+      for (const sample of tracker.floatData) {
+        const absSample = Math.abs(sample);
+        if (absSample > blockPeak) blockPeak = absSample;
+        blockSumSquares += sample * sample;
+        blockSampleCount += 1;
+      }
+      if (blockSampleCount > 0 && blockPeak >= MIN_NORMALIZATION_ACTIVE_SAMPLE) {
+        const blockRms = Math.sqrt(blockSumSquares / blockSampleCount);
+        if (Number.isFinite(blockRms) && blockRms > 0) {
+          tracker.blockRmsValues.push(blockRms);
+          tracker.blockCount = Number(tracker.blockCount ?? 0) + 1;
+        }
+      }
+    } else if (tracker.byteData) {
+      tracker.analyser.getByteTimeDomainData(tracker.byteData);
+      let blockSumSquares = 0;
+      let blockPeak = 0;
+      let blockSampleCount = 0;
+      for (const sample of tracker.byteData) {
+        const normalized = (sample - 128) / 128;
+        const absSample = Math.abs(normalized);
+        if (absSample > blockPeak) blockPeak = absSample;
+        blockSumSquares += normalized * normalized;
+        blockSampleCount += 1;
+      }
+      if (blockSampleCount > 0 && blockPeak >= MIN_NORMALIZATION_ACTIVE_SAMPLE) {
+        const blockRms = Math.sqrt(blockSumSquares / blockSampleCount);
+        if (Number.isFinite(blockRms) && blockRms > 0) {
+          tracker.blockRmsValues.push(blockRms);
+          tracker.blockCount = Number(tracker.blockCount ?? 0) + 1;
+        }
+      }
+    }
+  } catch (error) {
+    console.warn(`${MODULE_ID} | failed to sample normalization tracker`, error);
+    if (typeof tracker.onAnalysisComplete === "function") {
+      tracker.onAnalysisComplete(false);
+      tracker.onAnalysisComplete = null;
+    }
+    logNormalizationDebug("sample-error", {
+      channel,
+      track,
+      filePath,
+      extra: {
+        analyzedSec,
+        blockCount: tracker.blockCount,
+        workingBlockRms: getWorkingBlockRms(tracker),
+        error: String(error?.message ?? error),
+      },
+    });
+    clearNormalizationTracker(entry);
+    return;
+  }
+
+  const targetDurationSec = Number.isFinite(tracker.targetDurationSec)
+    ? Math.min(tracker.targetDurationSec, tracker.maxDurationSec)
+    : tracker.maxDurationSec;
+  if ((tracker.blockCount ?? 0) > 0 && analyzedSec >= targetDurationSec) {
+    const workingBlockRms = Number(getWorkingBlockRms(tracker) ?? 0);
+    if (workingBlockRms > MIN_NORMALIZATION_RMS) {
+      const loudnessDb = 20 * Math.log10(workingBlockRms);
+      if (Number.isFinite(loudnessDb)) {
+        entry.normalizationDb = loudnessDb;
+        setCachedTrackLoudnessDb(track, filePath, loudnessDb, { channel });
+        void persistNormalizationCacheToStorage().catch((error) => {
+          console.warn(`${MODULE_ID} | failed to persist normalization cache`, error);
+        });
+        const normalized = calculateNormalizationGain(channel, loudnessDb);
+        setSessionNormalizationDisplay(channel, {
+          currentDb: getAppliedNormalizationDb(loudnessDb, normalized.gain),
+          originalDb: loudnessDb,
+          targetDb: normalized.referenceDb,
+        });
+        if (!Number.isFinite(entry.normalizationGain) || Math.abs(entry.normalizationGain - normalized.gain) > 0.01) {
+          entry.normalizationGain = normalized.gain;
+          if (typeof onVolumeChange === "function") {
+            onVolumeChange(entry);
+          }
+        }
+        if (typeof tracker.onAnalysisComplete === "function") {
+          tracker.onAnalysisComplete(true);
+          tracker.onAnalysisComplete = null;
+        }
+        logNormalizationDebug("analysis-success", {
+          channel,
+          track,
+          filePath,
+          extra: {
+            analyzedSec,
+            targetDurationSec,
+            blockCount: tracker.blockCount,
+            workingBlockRms,
+            loudnessDb,
+            gain: normalized.gain,
+            referenceDb: normalized.referenceDb,
+          },
+        });
+        clearNormalizationTracker(entry);
+        return;
+      }
+    }
+  }
+
+  if (analyzedSec >= tracker.maxDurationSec) {
+    if (typeof tracker.onAnalysisComplete === "function") {
+      tracker.onAnalysisComplete(false);
+      tracker.onAnalysisComplete = null;
+    }
+    logNormalizationDebug("analysis-finished-without-result", {
+      channel,
+      track,
+      filePath,
+      extra: {
+        analyzedSec,
+        targetDurationSec,
+        maxDurationSec: tracker.maxDurationSec,
+        blockCount: tracker.blockCount,
+        workingBlockRms: getWorkingBlockRms(tracker),
+      },
+    });
+    clearNormalizationTracker(entry);
+  }
+}
+
+function bindNormalizationTracker(entry, track, filePath, {
+  channel = "music",
+  onVolumeChange = null,
+  onAnalysisComplete = null,
+} = {}) {
+  if (!entry?.sound || !isTrackNormalizationEnabled(track)) return false;
+  clearNormalizationTracker(entry, { clearRetry: false });
+
+  const context = entry.sound.context;
+  const sourceNode = entry.sound.sourceNode;
+  if (!context?.createAnalyser || !context?.createGain || !context.destination || typeof sourceNode?.connect !== "function") {
+    logNormalizationDebug("bind-unavailable", {
+      channel,
+      track,
+      filePath,
+      extra: {
+        hasContext: Boolean(context),
+        hasAnalyserFactory: Boolean(context?.createAnalyser),
+        hasGainFactory: Boolean(context?.createGain),
+        hasDestination: Boolean(context?.destination),
+        hasSourceNode: Boolean(sourceNode),
+        canConnect: typeof sourceNode?.connect === "function",
+      },
+    });
+    return false;
+  }
+
+  const clipStart = Number.isFinite(entry.clipStart) ? entry.clipStart : 0;
+  const clipEnd = Number.isFinite(entry.clipEnd) && entry.clipEnd > clipStart
+    ? entry.clipEnd
+    : null;
+  const analysisStartTime = getCurrentAbsoluteTime(entry) ?? getEstimatedAbsoluteTime(entry) ?? clipStart;
+  const maxDurationSec = clipEnd
+    ? Math.min(MAX_NORMALIZATION_ANALYSIS_SEC, Math.max(0.1, clipEnd - analysisStartTime))
+    : MAX_NORMALIZATION_ANALYSIS_SEC;
+  const targetDurationSec = getNormalizationTargetDurationSec(maxDurationSec);
+
+  const analyser = context.createAnalyser();
+  analyser.fftSize = 2048;
+  analyser.smoothingTimeConstant = 0;
+  const silentGain = context.createGain();
+  silentGain.gain.value = 0;
+
+  try {
+    sourceNode.connect(analyser);
+    analyser.connect(silentGain);
+    silentGain.connect(context.destination);
+  } catch (error) {
+    console.warn(`${MODULE_ID} | failed to bind normalization tracker`, error);
+    disconnectAudioNode(sourceNode, analyser);
+    disconnectAudioNode(analyser);
+    disconnectAudioNode(silentGain);
+    return false;
+  }
+
+  entry.normalizationTracker = {
+    sourceNode,
+    analyser,
+    silentGain,
+    startedAtMs: Date.now(),
+    startTime: analysisStartTime,
+    maxDurationSec,
+    targetDurationSec,
+    blockCount: 0,
+    blockRmsValues: [],
+    floatData: typeof analyser.getFloatTimeDomainData === "function"
+      ? new Float32Array(analyser.fftSize)
+      : null,
+    byteData: typeof analyser.getFloatTimeDomainData === "function"
+      ? null
+      : new Uint8Array(analyser.fftSize),
+    onAnalysisComplete,
+    intervalId: window.setInterval(() => {
+      sampleNormalizationTracker(entry, track, filePath, { channel, onVolumeChange });
+    }, NORMALIZATION_POLL_MS),
+  };
+
+  logNormalizationDebug("bind-success", {
+    channel,
+    track,
+    filePath,
+    extra: {
+      analysisStartTime,
+      maxDurationSec,
+      targetDurationSec,
+    },
+  });
+
+  return true;
+}
+
+async function waitForNormalizationAnalysis(entry, track, filePath, {
+  channel = "music",
+  onVolumeChange = null,
+  maxWaitMs = NORMALIZATION_BIND_MAX_WAIT_MS,
+} = {}) {
+  if (!entry?.sound || !isTrackNormalizationEnabled(track)) return false;
+
+  logNormalizationDebug("preload-wait-start", {
+    channel,
+    track,
+    filePath,
+    extra: {
+      maxWaitMs,
+    },
+  });
+
+  return await new Promise((resolve) => {
+    let settled = false;
+    const startedAtMs = Date.now();
+
+    const finish = (success) => {
+      if (settled) return;
+      settled = true;
+      clearNormalizationBindRetry(entry);
+      logNormalizationDebug(success ? "preload-wait-success" : "preload-wait-failed", {
+        channel,
+        track,
+        filePath,
+        extra: {
+          waitedMs: Date.now() - startedAtMs,
+        },
+      });
+      resolve(Boolean(success));
+    };
+
+    const tryBind = () => {
+      const bound = bindNormalizationTracker(entry, track, filePath, {
+        channel,
+        onVolumeChange,
+        onAnalysisComplete: (success) => finish(success),
+      });
+      if (bound) {
+        clearNormalizationBindRetry(entry);
+      }
+      return bound;
+    };
+
+    if (tryBind()) {
+      return;
+    }
+
+    entry.normalizationBindRetryId = window.setInterval(() => {
+      if (settled || entry?.ending) {
+        finish(false);
+        return;
+      }
+
+      if ((Date.now() - startedAtMs) >= maxWaitMs) {
+        finish(false);
+        return;
+      }
+
+      tryBind();
+    }, NORMALIZATION_BIND_RETRY_MS);
+  });
+}
+
+function retryBindNormalizationTracker(entry, track, filePath, {
+  channel = "music",
+  onVolumeChange = null,
+  maxWaitMs = NORMALIZATION_BIND_MAX_WAIT_MS,
+} = {}) {
+  if (!entry?.sound || !isTrackNormalizationEnabled(track)) return false;
+
+  clearNormalizationBindRetry(entry);
+  const startedAtMs = Date.now();
+  logNormalizationDebug("live-retry-start", {
+    channel,
+    track,
+    filePath,
+    extra: {
+      maxWaitMs,
+    },
+  });
+
+  const tryBind = () => {
+    const bound = bindNormalizationTracker(entry, track, filePath, {
+      channel,
+      onVolumeChange,
+    });
+    if (bound) {
+      clearNormalizationBindRetry(entry);
+    }
+    return bound;
+  };
+
+  if (tryBind()) {
+    return true;
+  }
+
+  entry.normalizationBindRetryId = window.setInterval(() => {
+    if (!entry || entry.ending || entry.paused) {
+      clearNormalizationBindRetry(entry);
+      return;
+    }
+
+    if ((Date.now() - startedAtMs) >= maxWaitMs) {
+      logNormalizationDebug("live-retry-timeout", {
+        channel,
+        track,
+        filePath,
+        extra: {
+          waitedMs: Date.now() - startedAtMs,
+        },
+      });
+      clearNormalizationBindRetry(entry);
+      return;
+    }
+
+    tryBind();
+  }, NORMALIZATION_BIND_RETRY_MS);
+
+  return false;
+}
+
+function getPreloadNormalizationWaitMs(targetDurationSec, analysisDurationSec) {
+  const safeTargetDurationSec = Number.isFinite(targetDurationSec) && targetDurationSec > 0
+    ? targetDurationSec
+    : getNormalizationTargetDurationSec(analysisDurationSec);
+  const safeAnalysisDurationSec = Number.isFinite(analysisDurationSec) && analysisDurationSec > 0
+    ? analysisDurationSec
+    : MAX_NORMALIZATION_ANALYSIS_SEC;
+  const bufferedWallMs = ((safeTargetDurationSec / PRELOAD_NORMALIZATION_RATE) * 1000) + (NORMALIZATION_POLL_MS * 2);
+  const maxTrackWallMs = ((safeAnalysisDurationSec / PRELOAD_NORMALIZATION_RATE) * 1000) + (NORMALIZATION_POLL_MS * 2);
+  return Math.max(150, Math.min(bufferedWallMs, maxTrackWallMs));
+}
+
+async function persistTrackNormalizationMetadata(channel) {
+  const channelKey = getNormalizationChannelKey(channel);
+  if (channelKey === "ambience") {
+    await setAmbienceTracks(storageState.ambienceTracks);
+    return;
+  }
+  await setTracks(storageState.tracks);
+}
+
+async function preAnalyzeTrackNormalizationBeforePlayback(track, filePath, {
+  channel = "music",
+  preloadChannel = channel === "ambience" ? "environment" : "music",
+} = {}) {
+  const resolved = resolveTrackNormalization(track, filePath, { channel });
+  if (!resolved.enabled || Number.isFinite(resolved.loudnessDb)) {
+    logNormalizationDebug("playback-source", {
+      channel,
+      track,
+      filePath,
+      extra: {
+        source: resolved.enabled ? "scan-cache" : "disabled",
+        loudnessDb: resolved.loudnessDb,
+        gain: resolved.gain,
+        referenceDb: resolved.referenceDb,
+      },
+    });
+    return resolved;
+  }
+
+  const sound = await preloadSoundWithFileCache(filePath, { channel: preloadChannel });
+  if (!sound) {
+    return resolved;
+  }
+
+  const clipStartRaw = parseTimeInput(track?.start);
+  const clipStart = Number.isFinite(clipStartRaw) && clipStartRaw >= 0 ? clipStartRaw : 0;
+  const clipEndRaw = parseTimeInput(track?.end);
+  const soundDuration = getSoundDuration(sound);
+  const clipEnd = Number.isFinite(clipEndRaw) && clipEndRaw > clipStart
+    ? clipEndRaw
+    : (Number.isFinite(soundDuration) && soundDuration > clipStart ? soundDuration : null);
+  const analysisDurationSec = clipEnd
+    ? Math.min(MAX_NORMALIZATION_ANALYSIS_SEC, Math.max(0.1, clipEnd - clipStart))
+    : MAX_NORMALIZATION_ANALYSIS_SEC;
+  const targetDurationSec = getNormalizationTargetDurationSec(analysisDurationSec);
+  const waitMsLimit = Math.min(
+    PRELOAD_NORMALIZATION_MAX_WAIT_MS,
+    getPreloadNormalizationWaitMs(targetDurationSec, analysisDurationSec) + 250,
+  );
+
+  const preloadEntry = {
+    sound,
+    clipStart,
+    clipEnd,
+    paused: false,
+    ending: false,
+    normalizationTracker: null,
+    normalizationBindRetryId: null,
+    timingBaseAbs: clipStart,
+    timingBaseMs: Date.now(),
+    timingRate: PRELOAD_NORMALIZATION_RATE,
+  };
+
+  try {
+    applySoundRate(sound, PRELOAD_NORMALIZATION_RATE);
+    applySoundVolume(sound, 0);
+
+    const playOptions = {
+      autoplay: true,
+      loop: false,
+      volume: 0,
+    };
+    if (clipStart > 0) {
+      playOptions.offset = clipStart;
+    }
+    if (Number.isFinite(clipEnd) && clipEnd > clipStart) {
+      playOptions.duration = Math.max(0.01, Math.min(analysisDurationSec, clipEnd - clipStart));
+    } else {
+      playOptions.duration = Math.max(0.01, analysisDurationSec);
+    }
+
+    await playSoundWithRetry(sound, playOptions);
+    await waitForNormalizationAnalysis(preloadEntry, track, filePath, {
+      channel,
+      maxWaitMs: waitMsLimit,
+    });
+  } catch (error) {
+    console.warn(`${MODULE_ID} | preload normalization analysis failed`, {
+      channel,
+      trackId: track?.id ?? null,
+      trackName: track?.name ?? null,
+      filePath,
+      error,
+    });
+  } finally {
+    clearNormalizationTracker(preloadEntry);
+    try {
+      await sound.stop();
+    } catch (_error) {
+      // no-op
+    }
+    forceStopSoundNodes(sound);
+    await waitMs(25);
+  }
+
+  const refreshed = resolveTrackNormalization(track, filePath, { channel });
+  logNormalizationDebug("playback-source", {
+    channel,
+    track,
+    filePath,
+    extra: {
+      source: Number.isFinite(refreshed.loudnessDb) ? "preload" : "unavailable",
+      loudnessDb: refreshed.loudnessDb,
+      gain: refreshed.gain,
+      referenceDb: refreshed.referenceDb,
+    },
+  });
+  if (Number.isFinite(refreshed.loudnessDb)) {
+    await persistTrackNormalizationMetadata(channel);
+  }
+  return refreshed;
 }
 
 function getEnvironmentVolume() {
@@ -2070,12 +3921,17 @@ function getEnvironmentVolume() {
 function getEffectiveAmbienceVolumeForSound(sound, {
   environmentVolume = getEnvironmentVolume(),
   ambienceVolume = getLiveAmbienceVolume(),
+  normalizationGain = 1,
 } = {}) {
-  const moduleAmbienceVolume = normalizeVolume(ambienceVolume);
+  const moduleAmbienceVolume = clampNumber(
+    normalizeVolume(ambienceVolume) * normalizeGain(normalizationGain),
+    0,
+    MAX_SOUND_GAIN
+  );
   if (isSoundOnChannel(sound, "environment")) {
     return moduleAmbienceVolume;
   }
-  return clampNumber(environmentVolume * moduleAmbienceVolume, 0, 1);
+  return clampNumber(environmentVolume * moduleAmbienceVolume, 0, MAX_SOUND_GAIN);
 }
 
 function applyEnvironmentVolumeToActiveAmbience({
@@ -2094,6 +3950,7 @@ function applyEnvironmentVolumeToActiveAmbience({
     const effectiveVolume = getEffectiveAmbienceVolumeForSound(entry.sound, {
       environmentVolume,
       ambienceVolume: normalizedAmbienceVolume,
+      normalizationGain: entry.normalizationGain,
     });
     applySoundVolume(entry.sound, effectiveVolume);
   }
@@ -2304,6 +4161,20 @@ async function setAmbiencePlaylists(playlists) {
 
 async function setAmbienceAllowConcurrent(enabled) {
   await setStorageValue("ambienceAllowConcurrent", Boolean(enabled));
+}
+
+async function persistNormalizationCacheToStorage() {
+  await setStorageValue("normalizationCache", exportCurrentNormalizationCacheStore());
+}
+
+async function persistStoredNormalizationReference(channel, referenceDb) {
+  const channelKey = getNormalizationChannelKey(channel);
+  if (!storageLoaded) {
+    await initializeStorageState();
+  }
+  const nextReferences = cloneNormalizationReferenceStore(storageState.normalizationReferences);
+  nextReferences[channelKey] = normalizeOptionalDecibel(referenceDb);
+  await setStorageValue("normalizationReferences", nextReferences);
 }
 
 function countPlaylistTracks(playlist, validTrackIds) {
@@ -2661,7 +4532,59 @@ function applyMusicVolumeToCurrentPlayback({ volume = getLiveMusicVolume(), forc
   if (!current?.sound) return;
 
   if (current.paused && !force) return;
-  applySoundVolume(current.sound, volume);
+  const effectiveVolume = getEffectiveMusicVolume({
+    liveMusicVolume: volume,
+    normalizationGain: current.normalizationGain,
+  });
+  applySoundVolume(current.sound, effectiveVolume);
+}
+
+async function applyManualNormalizationReference(channel, milliHertzValue) {
+  const channelKey = getNormalizationChannelKey(channel);
+  const channelLabel = channelKey === "ambience"
+    ? t("Common.Ambience", "Ambience")
+    : t("Common.Music", "Music");
+  const referenceDb = milliHertzToDecibel(milliHertzValue);
+
+  if (!Number.isFinite(referenceDb)) {
+    ui.notifications.warn(
+      tf(
+        "Notifications.ManualNormalizationInvalid",
+        { channel: channelLabel },
+        ({ channel: label }) => `TS-DJ-MUSIC: enter a valid ${String(label).toLowerCase()} normalization value in mHz greater than 0.`,
+      ),
+    );
+    return false;
+  }
+
+  applyStoredNormalizationReference(channelKey, referenceDb, { refresh: true });
+  await persistStoredNormalizationReference(channelKey, referenceDb);
+  ui.notifications.info(
+    tf(
+      "Notifications.ManualNormalizationApplied",
+      { channel: channelLabel, value: formatMilliHertz(referenceDb) },
+      ({ channel: label, value }) => `TS-DJ-MUSIC: ${label} normalization reference set to ${value}.`,
+    ),
+  );
+  return true;
+}
+
+async function resetManualNormalizationReference(channel) {
+  const channelKey = getNormalizationChannelKey(channel);
+  const channelLabel = channelKey === "ambience"
+    ? t("Common.Ambience", "Ambience")
+    : t("Common.Music", "Music");
+
+  applyStoredNormalizationReference(channelKey, null, { refresh: true });
+  await persistStoredNormalizationReference(channelKey, null);
+  ui.notifications.info(
+    tf(
+      "Notifications.ManualNormalizationReset",
+      { channel: channelLabel },
+      ({ channel: label }) => `TS-DJ-MUSIC: manual ${String(label).toLowerCase()} normalization reference cleared.`,
+    ),
+  );
+  return true;
 }
 
 function refreshPlaylistDirectoryUi() {
@@ -2710,6 +4633,7 @@ async function resetModuleSettingsToDefaults() {
   await stopPlayback();
   await stopAllAmbience();
   await setStorageData(defaultStorageData());
+  clearSessionNormalizationState({ refresh: false });
   await setLiveRate(DEFAULT_CLIENT_SETTINGS.liveRate, { apply: true });
   await setLiveMusicVolume(DEFAULT_CLIENT_SETTINGS.liveMusicVolume, { apply: true });
   await setLiveAmbienceVolume(DEFAULT_CLIENT_SETTINGS.liveAmbienceVolume, { apply: true });
@@ -2998,6 +4922,11 @@ async function playTrack(track, options = {}) {
   playbackState.loading = true;
   await stopPlayback({ suppressUiRefresh: true, sync: false, cancelPending: false });
 
+  const normalization = await preAnalyzeTrackNormalizationBeforePlayback(track, file.path, { channel: "music" });
+  if (playbackState.requestId !== requestId) {
+    return false;
+  }
+
   const sound = await preloadSoundWithFileCache(file.path, { channel: "music" });
   if (playbackState.requestId !== requestId) {
     forceStopSoundNodes(sound);
@@ -3011,6 +4940,10 @@ async function playTrack(track, options = {}) {
 
   const token = foundry.utils.randomID();
   const liveMusicVolume = getLiveMusicVolume();
+  const effectiveVolume = getEffectiveMusicVolume({
+    liveMusicVolume,
+    normalizationGain: normalization.gain,
+  });
   const defaultRate = normalizeRate(Number(track.rate ?? 1));
   const liveRate = getLiveRate();
   const finalRate = liveRate !== 1 ? liveRate : defaultRate;
@@ -3029,7 +4962,7 @@ async function playTrack(track, options = {}) {
   const playOptions = {
     autoplay: true,
     loop: loopMode.nativeLoopEnabled,
-    volume: liveMusicVolume,
+    volume: effectiveVolume,
     onended: () => {
       handleTrackEnded(token).catch((error) => console.warn(`${MODULE_ID} | onended failed`, error));
     },
@@ -3067,7 +5000,7 @@ async function playTrack(track, options = {}) {
   }
 
   applySoundRate(sound, finalRate);
-  applySoundVolume(sound, liveMusicVolume);
+  applySoundVolume(sound, effectiveVolume);
   playbackState.loading = false;
 
   playbackState.current = {
@@ -3091,6 +5024,9 @@ async function playTrack(track, options = {}) {
     segmentLoopActive: false,
     ignoreEndedUntil: 0,
     suppressNextEnd: false,
+    normalizationEnabled: normalization.enabled,
+    normalizationGain: normalization.gain,
+    normalizationDb: normalization.loudnessDb,
     defaultRate,
     timingBaseAbs: offset,
     timingBaseMs: Date.now(),
@@ -3157,6 +5093,14 @@ async function playAmbienceTrack(track, options = {}) {
     mode,
   });
 
+  const normalization = await preAnalyzeTrackNormalizationBeforePlayback(track, file.path, {
+    channel: "ambience",
+    preloadChannel: "environment",
+  });
+  if (!ambienceState.pending.has(requestId)) {
+    return false;
+  }
+
   const sound = await preloadSoundWithFileCache(file.path, { channel: "environment" });
   if (!ambienceState.pending.has(requestId)) {
     forceStopSoundNodes(sound);
@@ -3169,7 +5113,9 @@ async function playAmbienceTrack(track, options = {}) {
   }
 
   const token = foundry.utils.randomID();
-  const ambienceVolume = getEffectiveAmbienceVolumeForSound(sound);
+  const ambienceVolume = getEffectiveAmbienceVolumeForSound(sound, {
+    normalizationGain: normalization.gain,
+  });
   const defaultRate = normalizeRate(Number(track.rate ?? 1));
   const liveRate = getLiveRate();
   const finalRate = liveRate !== 1 ? liveRate : defaultRate;
@@ -3243,6 +5189,9 @@ async function playAmbienceTrack(track, options = {}) {
     loopRestarting: false,
     segmentLoopActive: false,
     ignoreEndedUntil: 0,
+    normalizationEnabled: normalization.enabled,
+    normalizationGain: normalization.gain,
+    normalizationDb: normalization.loudnessDb,
     timingBaseAbs: offset,
     timingBaseMs: Date.now(),
     timingRate: finalRate,
@@ -3295,6 +5244,7 @@ async function handleTrackEnded(token, { forceStop = false } = {}) {
   current.ending = true;
   clearClipEndMonitor(current);
   clearSegmentLoopBinding(current.sound);
+  clearNormalizationTracker(current);
 
   if (forceStop) {
     try {
@@ -3388,6 +5338,7 @@ async function stopPlayback({ suppressUiRefresh = false, sync = true, cancelPend
   current.suppressNextEnd = true;
   clearClipEndMonitor(current);
   clearSegmentLoopBinding(current.sound);
+  clearNormalizationTracker(current);
 
   try {
     await current.sound.stop();
@@ -3462,6 +5413,7 @@ async function stopAmbienceEntry(entry) {
   entry.suppressNextEnd = true;
   clearAmbienceClipEndMonitor(entry);
   clearSegmentLoopBinding(entry.sound);
+  clearNormalizationTracker(entry);
   try {
     await entry.sound.stop();
   } catch (_error) {
@@ -3491,6 +5443,7 @@ async function handleAmbienceEnded(token, { forceStop = false } = {}) {
   entry.ending = true;
   clearAmbienceClipEndMonitor(entry);
   clearSegmentLoopBinding(entry.sound);
+  clearNormalizationTracker(entry);
 
   if (forceStop) {
     try {
@@ -3553,6 +5506,7 @@ async function pauseCurrentPlayback(options = {}) {
   current.paused = true;
   clearClipEndMonitor(current);
   clearSegmentLoopBinding(current.sound);
+  clearNormalizationTracker(current);
 
   try {
     await current.sound.stop();
@@ -3644,6 +5598,8 @@ class TsDjMusicApp extends Application {
         startLabel: track.start || "0",
         endLabel: track.end || "-",
         rateLabel: `${formatRate(Number(track.rate ?? 1))}x`,
+        normalizeTitle: t("Common.Normalize", "Normalize"),
+        normalizeLabel: yesNo(isTrackNormalizationEnabled(track)),
         loop: Boolean(track.loop),
         active,
         playAction: active ? (paused ? "resume-current" : "pause-current") : "play-track",
@@ -3709,6 +5665,8 @@ class TsDjMusicApp extends Application {
         startLabel: track.start || "0",
         endLabel: track.end || "-",
         rateLabel: `${formatRate(Number(track.rate ?? 1))}x`,
+        normalizeTitle: t("Common.Normalize", "Normalize"),
+        normalizeLabel: yesNo(isTrackNormalizationEnabled(track)),
         loop: Boolean(track.loop),
         active,
         playAction: active ? "stop-ambience-track" : "play-ambience-track",
@@ -3767,6 +5725,19 @@ class TsDjMusicApp extends Application {
     return {
       liveRate,
       liveRateLabel: formatRate(liveRate),
+      normalizationSectionTitle: t("Common.Normalization", "Normalization"),
+      musicAutoLevelLabel: t("App.MusicNormalization", localizedFallback("РќРѕСЂРј. РјСѓР·С‹РєРё:", "Norm. music:")),
+      musicAutoLevelMonitor: getNormalizationMonitorLabel("music"),
+      musicNormalizationInputValue: formatManualNormalizationInputValue("music"),
+      musicNormalizationScanLabel: getNormalizationScanButtonLabel("music"),
+      musicNormalizationScanDisabled: normalizationScanState.music,
+      normalizationSetLabel: t("Settings.ManualNormalizationSet", "Set"),
+      normalizationResetLabel: t("Settings.ManualNormalizationReset", "Reset"),
+      ambienceAutoLevelLabel: t("App.AmbienceNormalization", localizedFallback("РќРѕСЂРј. СЌРјР±РёРµРЅСЃР°:", "Norm. ambience:")),
+      ambienceAutoLevelMonitor: getNormalizationMonitorLabel("ambience"),
+      ambienceNormalizationInputValue: formatManualNormalizationInputValue("ambience"),
+      ambienceNormalizationScanLabel: getNormalizationScanButtonLabel("ambience"),
+      ambienceNormalizationScanDisabled: normalizationScanState.ambience,
       liveMusicVolume,
       liveMusicVolumeLabel: formatVolumePercent(liveMusicVolume),
       liveAmbienceVolume,
@@ -3785,6 +5756,7 @@ class TsDjMusicApp extends Application {
       isPlaying: Boolean(playbackState.current),
       currentLabel,
       managerSections: {
+        normalization: Boolean(managerSectionState.normalization),
         files: Boolean(managerSectionState.files),
         music: Boolean(managerSectionState.music),
         ambience: Boolean(managerSectionState.ambience),
@@ -3923,6 +5895,28 @@ class TsDjMusicApp extends Application {
         case "create-playlist":
           await this.#createOrEditPlaylist();
           break;
+        case "transfer-playlist": {
+          const transferred = await transferMusicPlaylist();
+          if (transferred?.action === "import" && transferred?.applied) {
+            await initializeStorageState();
+            refreshPlaylistDirectoryUi();
+            await this.#refreshCards([
+              MANAGER_CARD_IDS.files,
+              MANAGER_CARD_IDS.musicTracks,
+              MANAGER_CARD_IDS.musicPlaylists,
+            ], { refreshToolbar: true });
+
+            const info = transferred.summary ?? {};
+            notify("info", "PlaylistImportAppliedSummary", {
+              files: info.importedFiles ?? 0,
+              tracks: info.musicTracks ?? 0,
+              playlists: info.musicPlaylists ?? 0,
+            }, ({ files, tracks, playlists }) =>
+              `TS-DJ-MUSIC: playlist import complete. Files ${files}, tracks ${tracks}, playlists ${playlists}.`
+            );
+          }
+          break;
+        }
         case "edit-playlist":
           await this.#createOrEditPlaylist(id);
           break;
@@ -3966,6 +5960,23 @@ class TsDjMusicApp extends Application {
         case "stop":
           await stopPlayback();
           break;
+        case "apply-manual-normalization": {
+          const channel = event.currentTarget.dataset.channel ?? "music";
+          const input = root?.querySelector(`[data-normalization-input='${channel}']`);
+          const rawValue = input instanceof HTMLInputElement ? input.value : "";
+          await applyManualNormalizationReference(channel, rawValue);
+          break;
+        }
+        case "reset-manual-normalization": {
+          const channel = event.currentTarget.dataset.channel ?? "music";
+          await resetManualNormalizationReference(channel);
+          break;
+        }
+        case "scan-normalization-tracks": {
+          const channel = event.currentTarget.dataset.channel ?? "music";
+          await scanNormalizationTracks(channel);
+          break;
+        }
         case "export-settings":
           await exportModuleSettings();
           break;
@@ -4724,6 +6735,7 @@ async function promptTrackData(current, files) {
   const defaultName = isNewTrack ? getDefaultNameFromFileEntry(selectedFile) : "";
   const initialStart = current?.start ?? (isNewTrack ? "00:00" : "");
   const initialEnd = current?.end ?? "";
+  const initialNormalize = isTrackNormalizationEnabled(current);
 
   const fileOptions = files
     .map((file) => `<option value="${file.id}" ${file.id === selectedFileId ? "selected" : ""}>${escapeHtml(file.name || file.path)}</option>`)
@@ -4763,6 +6775,12 @@ async function promptTrackData(current, files) {
         <label>${escapeHtml(t("Dialogs.TrackRateLabel", "Default speed"))}</label>
         <div class="form-fields">
           <select name="rate">${rateOptions}</select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>${escapeHtml(t("Dialogs.TrackNormalizeLabel", "Normalize"))}</label>
+        <div class="form-fields">
+          <input type="checkbox" name="normalize" ${initialNormalize ? "checked" : ""}>
         </div>
       </div>
       <div class="form-group">
@@ -4920,6 +6938,7 @@ async function promptTrackData(current, files) {
     start: String(result.start ?? "").trim(),
     end: String(result.end ?? "").trim(),
     rate: normalizeRate(Number(result.rate ?? 1)),
+    normalize: Boolean(result.normalize),
     loop: Boolean(current?.loop),
   };
 }

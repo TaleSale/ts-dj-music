@@ -5,7 +5,11 @@
       "LiveMusicVolume": "Music Volume",
       "LiveAmbienceVolume": "Ambience Volume",
       "AllowMultipleAmbience": "Allow multiple ambience",
-      "WindowTitle": "TS-DJ-MUSIC"
+      "WindowTitle": "TS-DJ-MUSIC",
+      "MusicNormalization": "Norm. music:",
+      "AmbienceNormalization": "Norm. ambience:",
+      "ScanMusicNormalization": "Scan music tracks",
+      "ScanAmbienceNormalization": "Scan ambience tracks"
     },
     "Common": {
       "Ambience": "Ambience",
@@ -25,6 +29,8 @@
       "Loop": "Loop",
       "LoopLower": "loop",
       "Music": "Music",
+      "Normalize": "Normalize",
+      "Normalization": "Normalization",
       "New": "New",
       "No": "No",
       "Off": "off",
@@ -47,7 +53,8 @@
       "TracksLower": "tracks",
       "Untitled": "Untitled",
       "UntitledFile": "Unnamed file",
-      "Yes": "Yes"
+      "Yes": "Yes",
+      "ImportExport": "Import/Export"
     },
     "Dialogs": {
       "DeleteAllAmbiencePlaylistsContent": "<p>Delete all ambience playlists?</p>",
@@ -91,6 +98,8 @@
       "TrackFileLabel": "File",
       "TrackNameLabel": "Track name",
       "TrackNamePlaceholder": "For example: Song 1 (00:03-01:20)",
+      "TrackNormalizeHint": "Align this track to the session reference loudness",
+      "TrackNormalizeLabel": "Normalize",
       "TrackRateLabel": "Default speed",
       "TrackStartLabel": "Clip start",
       "TrackStartPlaceholder": "00:03 or 3",
@@ -147,7 +156,9 @@
       "LiveMusicVolume": "DJ Live Music Volume",
       "LiveRate": "DJ Live Rate",
       "Playlists": "DJ Playlists",
-      "Tracks": "DJ Tracks"
+      "Tracks": "DJ Tracks",
+      "ManualNormalizationSet": "Set",
+      "ManualNormalizationReset": "Reset"
     },
     "Sidebar": {
       "FoundryPlaylists": "Foundry Playlists",

@@ -44,6 +44,76 @@
   flex: 1;
 }
 
+.ts-dj-live-monitor-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+
+.ts-dj-live-monitor-row--manual {
+  flex-wrap: wrap;
+}
+
+.ts-dj-live-monitor-row--scan {
+  justify-content: flex-end;
+}
+
+.ts-dj-live-monitor-row--scan button {
+  height: 28px;
+  padding: 0 10px;
+}
+
+.ts-dj-live-monitor-row label {
+  white-space: nowrap;
+  font-size: 0.92em;
+  font-weight: 600;
+}
+
+.ts-dj-live-monitor-value {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border-light-2);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-bg-option) 80%, transparent);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ts-dj-live-monitor-row--manual .ts-dj-live-monitor-value {
+  flex: 1 1 220px;
+}
+
+.ts-dj-live-monitor-row--manual input[data-normalization-input] {
+  width: 92px;
+  flex: 0 0 92px;
+}
+
+.ts-dj-live-normalization-unit {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.ts-dj-live-monitor-row--manual button {
+  height: 28px;
+  padding: 0 10px;
+}
+
+.ts-dj-normalization-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ts-dj-normalization-channel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .ts-dj-live-control-value {
   min-width: 46px;
   text-align: right;
@@ -671,6 +741,42 @@
 .ts-dj-music-sidebar-rate .ts-dj-music-sidebar-rate-speed .control-row input[type="range"] {
   flex: 1;
   height: unset;
+}
+
+.ts-dj-music-sidebar-rate .ts-dj-music-sidebar-rate-speed .monitor-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  line-height: var(--entry-height);
+}
+
+.ts-dj-music-sidebar-rate .ts-dj-music-sidebar-rate-speed .monitor-row label {
+  flex: 0 0 auto;
+  min-width: 92px;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-primary) !important;
+  font-size: var(--font-size-13) !important;
+  font-weight: 500 !important;
+  line-height: var(--entry-height) !important;
+  text-align: left;
+}
+
+.ts-dj-music-sidebar-rate .ts-dj-music-sidebar-rate-speed .monitor-value {
+  flex: 1;
+  min-width: 0;
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--color-border-light-2) 80%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-bg-option) 82%, transparent);
+  font-size: var(--font-size-12);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ts-dj-music-sidebar-rate .ts-dj-music-sidebar-rate-speed .value {

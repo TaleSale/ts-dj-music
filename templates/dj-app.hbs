@@ -35,6 +35,45 @@
   </section>
 
   <section class="ts-dj-sections">
+    <details class="ts-dj-section" data-section="normalization" {{#if managerSections.normalization}}open{{/if}}>
+      <summary>{{normalizationSectionTitle}}</summary>
+      <div class="ts-dj-section-body">
+        <article class="ts-dj-card">
+          <header class="ts-dj-card-static-header">
+            <span class="ts-dj-card-summary-label">{{normalizationSectionTitle}}</span>
+          </header>
+          <div class="ts-dj-section-body ts-dj-normalization-block">
+            <div class="ts-dj-normalization-channel">
+              <div class="ts-dj-live-monitor-row ts-dj-live-monitor-row--manual">
+                <label data-normalization-label="music">{{musicAutoLevelLabel}}</label>
+                <span class="ts-dj-live-monitor-value" data-normalization-monitor="music">{{musicAutoLevelMonitor}}</span>
+                <input type="text" value="{{musicNormalizationInputValue}}" placeholder="1000" inputmode="decimal" autocomplete="off" data-normalization-input="music">
+                <span class="ts-dj-live-normalization-unit">mHz</span>
+                <button type="button" data-action="apply-manual-normalization" data-channel="music">{{normalizationSetLabel}}</button>
+                <button type="button" data-action="reset-manual-normalization" data-channel="music">{{normalizationResetLabel}}</button>
+              </div>
+              <div class="ts-dj-live-monitor-row ts-dj-live-monitor-row--scan">
+                <button type="button" data-action="scan-normalization-tracks" data-channel="music" data-normalization-scan-button="music" {{#if musicNormalizationScanDisabled}}disabled{{/if}}>{{musicNormalizationScanLabel}}</button>
+              </div>
+            </div>
+            <div class="ts-dj-normalization-channel">
+              <div class="ts-dj-live-monitor-row ts-dj-live-monitor-row--manual">
+                <label data-normalization-label="ambience">{{ambienceAutoLevelLabel}}</label>
+                <span class="ts-dj-live-monitor-value" data-normalization-monitor="ambience">{{ambienceAutoLevelMonitor}}</span>
+                <input type="text" value="{{ambienceNormalizationInputValue}}" placeholder="1000" inputmode="decimal" autocomplete="off" data-normalization-input="ambience">
+                <span class="ts-dj-live-normalization-unit">mHz</span>
+                <button type="button" data-action="apply-manual-normalization" data-channel="ambience">{{normalizationSetLabel}}</button>
+                <button type="button" data-action="reset-manual-normalization" data-channel="ambience">{{normalizationResetLabel}}</button>
+              </div>
+              <div class="ts-dj-live-monitor-row ts-dj-live-monitor-row--scan">
+                <button type="button" data-action="scan-normalization-tracks" data-channel="ambience" data-normalization-scan-button="ambience" {{#if ambienceNormalizationScanDisabled}}disabled{{/if}}>{{ambienceNormalizationScanLabel}}</button>
+              </div>
+            </div>
+          </div>
+        </article>
+      </div>
+    </details>
+
     <details class="ts-dj-section" data-section="files" {{#if managerSections.files}}open{{/if}}>
       <summary>{{localize "TS_DJ_MUSIC.Common.Files"}}</summary>
       <div class="ts-dj-section-body">
@@ -78,6 +117,7 @@
             </summary>
             <div class="ts-dj-card-actions">
               <button type="button" data-action="create-playlist"><i class="fas fa-plus"></i> {{localize "TS_DJ_MUSIC.Common.New"}}</button>
+              <button type="button" data-action="transfer-playlist"><i class="fas fa-right-left"></i> {{localize "TS_DJ_MUSIC.Common.ImportExport"}}</button>
               <button type="button" class="ts-dj-icon-button" data-action="delete-playlists-block" title="{{localize "TS_DJ_MUSIC.Dialogs.DeleteAllPlaylistsTitle"}}" aria-label="{{localize "TS_DJ_MUSIC.Dialogs.DeleteAllPlaylistsTitle"}}"><i class="fas fa-trash"></i></button>
             </div>
             <div class="ts-dj-card-content">
@@ -149,7 +189,7 @@
                       <div class="ts-dj-row-main">
                         <strong>{{name}}</strong>
                         <div class="meta">{{localize "TS_DJ_MUSIC.Common.File"}}: {{fileName}}</div>
-                        <div class="meta">{{localize "TS_DJ_MUSIC.Common.Clip"}}: {{startLabel}} - {{endLabel}} | {{localize "TS_DJ_MUSIC.Common.Speed"}}: {{rateLabel}} | {{localize "TS_DJ_MUSIC.Common.Loop"}}: {{#if loop}}{{localize "TS_DJ_MUSIC.Common.Yes"}}{{else}}{{localize "TS_DJ_MUSIC.Common.No"}}{{/if}}</div>
+                        <div class="meta">{{localize "TS_DJ_MUSIC.Common.Clip"}}: {{startLabel}} - {{endLabel}} | {{localize "TS_DJ_MUSIC.Common.Speed"}}: {{rateLabel}} | {{normalizeTitle}}: {{normalizeLabel}} | {{localize "TS_DJ_MUSIC.Common.Loop"}}: {{#if loop}}{{localize "TS_DJ_MUSIC.Common.Yes"}}{{else}}{{localize "TS_DJ_MUSIC.Common.No"}}{{/if}}</div>
                       </div>
                       <div class="ts-dj-actions">
                         <button type="button" class="ts-dj-play-toggle" data-action="{{playAction}}" data-id="{{id}}"><i class="fas {{playIcon}}"></i></button>
@@ -251,7 +291,7 @@
                       <div class="ts-dj-row-main">
                         <strong>{{name}}</strong>
                         <div class="meta">{{localize "TS_DJ_MUSIC.Common.File"}}: {{fileName}}</div>
-                        <div class="meta">{{localize "TS_DJ_MUSIC.Common.Clip"}}: {{startLabel}} - {{endLabel}} | {{localize "TS_DJ_MUSIC.Common.Speed"}}: {{rateLabel}} | {{localize "TS_DJ_MUSIC.Common.Loop"}}: {{#if loop}}{{localize "TS_DJ_MUSIC.Common.Yes"}}{{else}}{{localize "TS_DJ_MUSIC.Common.No"}}{{/if}}</div>
+                        <div class="meta">{{localize "TS_DJ_MUSIC.Common.Clip"}}: {{startLabel}} - {{endLabel}} | {{localize "TS_DJ_MUSIC.Common.Speed"}}: {{rateLabel}} | {{normalizeTitle}}: {{normalizeLabel}} | {{localize "TS_DJ_MUSIC.Common.Loop"}}: {{#if loop}}{{localize "TS_DJ_MUSIC.Common.Yes"}}{{else}}{{localize "TS_DJ_MUSIC.Common.No"}}{{/if}}</div>
                       </div>
                       <div class="ts-dj-actions">
                         <button type="button" class="ts-dj-play-toggle" data-action="{{playAction}}" data-id="{{id}}"><i class="fas {{playIcon}}"></i></button>

@@ -5,7 +5,11 @@
       "LiveMusicVolume": "Громкость музыки",
       "LiveAmbienceVolume": "Громкость эмбиента",
       "AllowMultipleAmbience": "Разрешить несколько эмбиентов",
-      "WindowTitle": "TS-DJ-MUSIC"
+      "WindowTitle": "TS-DJ-MUSIC",
+      "MusicNormalization": "Норм. музыки:",
+      "AmbienceNormalization": "Норм. эмбиенса:",
+      "ScanMusicNormalization": "Сканировать треки музыки",
+      "ScanAmbienceNormalization": "Сканировать треки эмбиенса"
     },
     "Common": {
       "Ambience": "Эмбиент",
@@ -25,6 +29,8 @@
       "Loop": "Цикл",
       "LoopLower": "цикл",
       "Music": "Музыка",
+      "Normalize": "\u041d\u043e\u0440\u043c\u0430\u043b\u0438\u0437\u043e\u0432\u0430\u0442\u044c",
+      "Normalization": "\u041d\u043e\u0440\u043c\u0430\u043b\u0438\u0437\u0430\u0446\u0438\u044f",
       "New": "Новый",
       "No": "Нет",
       "Off": "выкл",
@@ -47,7 +53,8 @@
       "TracksLower": "трека(ов)",
       "Untitled": "Без названия",
       "UntitledFile": "Без имени",
-      "Yes": "Да"
+      "Yes": "Да",
+      "ImportExport": "Импорт/экспорт"
     },
     "Dialogs": {
       "DeleteAllAmbiencePlaylistsContent": "<p>Удалить все эмбиент-плейлисты?</p>",
@@ -91,6 +98,8 @@
       "TrackFileLabel": "Файл",
       "TrackNameLabel": "Название трека",
       "TrackNamePlaceholder": "Например: Песня 1 (00:03-01:20)",
+      "TrackNormalizeHint": "\u0412\u044b\u0440\u0430\u0432\u043d\u0438\u0432\u0430\u0442\u044c \u0433\u0440\u043e\u043c\u043a\u043e\u0441\u0442\u044c \u0442\u0440\u0435\u043a\u0430 \u043f\u043e \u043e\u043f\u043e\u0440\u043d\u043e\u043c\u0443 \u0443\u0440\u043e\u0432\u043d\u044e \u0441\u0435\u0441\u0441\u0438\u0438",
+      "TrackNormalizeLabel": "\u041d\u043e\u0440\u043c\u0430\u043b\u0438\u0437\u043e\u0432\u0430\u0442\u044c",
       "TrackRateLabel": "Скорость по умолчанию",
       "TrackStartLabel": "Начало отрезка",
       "TrackStartPlaceholder": "00:03 или 3",
@@ -147,7 +156,9 @@
       "LiveMusicVolume": "DJ Live Громкость музыки",
       "LiveRate": "DJ Live Скорость",
       "Playlists": "DJ Плейлисты",
-      "Tracks": "DJ Треки"
+      "Tracks": "DJ Треки",
+      "ManualNormalizationSet": "\u041f\u0440\u0438\u043c\u0435\u043d\u0438\u0442\u044c",
+      "ManualNormalizationReset": "\u0421\u0431\u0440\u043e\u0441"
     },
     "Sidebar": {
       "FoundryPlaylists": "Плейлисты Foundry",
