@@ -118,9 +118,19 @@ const managerCardExpandState = {
 };
 const managerPlaylistExpandState = {};
 const managerAmbiencePlaylistExpandState = {};
+const managerTrackRootExpandState = {
+  music: true,
+  ambience: true,
+};
 const managerPlaylistDragState = {
+  source: null,
   kind: null,
   playlistId: null,
+  folderId: null,
+  trackId: null,
+};
+const managerTrackFolderDragState = {
+  kind: null,
   trackId: null,
 };
 const sidebarSectionState = {
@@ -158,8 +168,10 @@ const storageState = {
   files: [],
   tracks: [],
   playlists: [],
+  trackFolders: [],
   ambienceTracks: [],
   ambiencePlaylists: [],
+  ambienceTrackFolders: [],
   ambienceAllowConcurrent: false,
   normalizationCache: {},
   normalizationReferences: {
@@ -366,8 +378,10 @@ Hooks.on("deletePlaylist", (playlist) => {
   storageState.files = [];
   storageState.tracks = [];
   storageState.playlists = [];
+  storageState.trackFolders = [];
   storageState.ambienceTracks = [];
   storageState.ambiencePlaylists = [];
+  storageState.ambienceTrackFolders = [];
   storageState.ambienceAllowConcurrent = false;
   refreshPlaylistDirectoryUi();
 });
@@ -538,8 +552,10 @@ function defaultStorageData() {
     files: [],
     tracks: [],
     playlists: [],
+    trackFolders: [],
     ambienceTracks: [],
     ambiencePlaylists: [],
+    ambienceTrackFolders: [],
     ambienceAllowConcurrent: false,
     normalizationCache: {},
     normalizationReferences: {
@@ -632,14 +648,24 @@ function normalizeStorageData(raw) {
   const files = normalizeArray(source.files);
   const normalizationCache = normalizeNormalizationCacheStore(source.normalizationCache);
   const normalizationReferences = normalizeNormalizationReferenceStore(source.normalizationReferences);
+  const trackFolders = normalizeArray(source.trackFolders).map((entry) => normalizeTrackFolderEntry(entry));
+  const ambienceTrackFolders = normalizeArray(source.ambienceTrackFolders).map((entry) => normalizeTrackFolderEntry(entry));
   const tracks = hydrateTrackNormalizationMetadata(source.tracks, files, normalizationCache);
   const ambienceTracks = hydrateTrackNormalizationMetadata(source.ambienceTracks, files, normalizationCache);
   return {
     files,
-    tracks,
-    playlists: normalizeArray(source.playlists),
-    ambienceTracks,
+    tracks: tracks.map((track) => ({
+      ...track,
+      folderId: normalizeTrackFolderId(track.folderId, trackFolders),
+    })),
+    playlists: normalizeArray(source.playlists).map((entry) => normalizeMusicPlaylistEntry(entry)),
+    trackFolders,
+    ambienceTracks: ambienceTracks.map((track) => ({
+      ...track,
+      folderId: normalizeTrackFolderId(track.folderId, ambienceTrackFolders),
+    })),
     ambiencePlaylists: normalizeArray(source.ambiencePlaylists),
+    ambienceTrackFolders,
     ambienceAllowConcurrent: Boolean(source.ambienceAllowConcurrent),
     normalizationCache,
     normalizationReferences,
@@ -650,9 +676,11 @@ function cloneStorageData(data = storageState) {
   return {
     files: normalizeArray(data.files).map((entry) => ({ ...entry })),
     tracks: normalizeArray(data.tracks).map((entry) => ({ ...entry })),
-    playlists: normalizeArray(data.playlists).map((entry) => ({ ...entry, trackIds: normalizeArray(entry.trackIds) })),
+    playlists: normalizeArray(data.playlists).map((entry) => cloneMusicPlaylistEntry(entry)),
+    trackFolders: normalizeArray(data.trackFolders).map((entry) => ({ ...entry })),
     ambienceTracks: normalizeArray(data.ambienceTracks).map((entry) => ({ ...entry })),
     ambiencePlaylists: normalizeArray(data.ambiencePlaylists).map((entry) => ({ ...entry, trackIds: normalizeArray(entry.trackIds) })),
+    ambienceTrackFolders: normalizeArray(data.ambienceTrackFolders).map((entry) => ({ ...entry })),
     ambienceAllowConcurrent: Boolean(data.ambienceAllowConcurrent),
     normalizationCache: cloneNormalizationCacheStore(),
     normalizationReferences: cloneNormalizationReferenceStore(data.normalizationReferences),
@@ -664,8 +692,10 @@ function applyStorageData(next) {
   storageState.files = normalized.files;
   storageState.tracks = normalized.tracks;
   storageState.playlists = normalized.playlists;
+  storageState.trackFolders = normalized.trackFolders;
   storageState.ambienceTracks = normalized.ambienceTracks;
   storageState.ambiencePlaylists = normalized.ambiencePlaylists;
+  storageState.ambienceTrackFolders = normalized.ambienceTrackFolders;
   storageState.ambienceAllowConcurrent = normalized.ambienceAllowConcurrent;
   storageState.normalizationCache = applyNormalizationCacheStore(normalized.normalizationCache);
   storageState.normalizationReferences = cloneNormalizationReferenceStore(normalized.normalizationReferences);
@@ -699,7 +729,7 @@ function getSessionManualNormalizationReferenceDb(channel) {
 
 function normalizeOptionalDecibel(value) {
   const raw = value;
-  const numeric = raw === null || raw === undefined || raw === ""
+  const numeric = raw === null || raw === undefined || raw === "" || typeof raw === "boolean"
     ? null
     : Number(raw);
   return Number.isFinite(numeric) ? numeric : null;
@@ -908,6 +938,25 @@ function formatMilliHertz(value) {
   if (milliValue < 10) return `${milliValue.toFixed(2)} mHz`;
   if (milliValue < 100) return `${milliValue.toFixed(1)} mHz`;
   return `${Math.round(milliValue)} mHz`;
+}
+
+function formatCompactMilliHertz(value) {
+  const milliHertz = decibelToMilliHertz(value);
+  if (!Number.isFinite(milliHertz) || milliHertz <= 0) return "-";
+
+  if (milliHertz < 0.001) return "0,001";
+
+  const decimals = milliHertz < 1
+    ? 3
+    : milliHertz < 10
+      ? 2
+      : milliHertz < 100
+        ? 1
+        : 0;
+  const text = decimals > 0
+    ? milliHertz.toFixed(decimals).replace(/0+$/, "").replace(/\.$/, "")
+    : String(Math.round(milliHertz));
+  return text.replace(".", ",");
 }
 
 function decibelToMilliHertz(value) {
@@ -1364,6 +1413,62 @@ function injectPlaylistDirectoryButton(root) {
   buttonContainer.appendChild(button);
 }
 
+function getVolumeIconClass(volume) {
+  const normalized = normalizeVolume(volume);
+  if (normalized <= 0) return "fa-volume-xmark";
+  if (normalized < 0.5) return "fa-volume-low";
+  return "fa-volume-high";
+}
+
+function getSidebarLiveControlRoot(root = null) {
+  const candidate = root instanceof HTMLElement ? root : getRoot(ui.playlists?.element);
+  if (!(candidate instanceof HTMLElement)) return null;
+  if (candidate.classList.contains(`${MODULE_ID}-sidebar-rate`)) return candidate;
+  return candidate.querySelector(`.${MODULE_ID}-sidebar-rate`);
+}
+
+function syncSidebarRangeControl(root, controlKey, value, format, { iconFromValue = null } = {}) {
+  const input = root.querySelector(`[data-live-control='${controlKey}']`);
+  if (input instanceof HTMLInputElement && document.activeElement !== input) {
+    input.value = String(value);
+  }
+
+  const label = root.querySelector(`[data-live-control-value='${controlKey}']`);
+  if (label) {
+    label.textContent = format(value);
+  }
+
+  const icon = root.querySelector(`[data-live-control-icon='${controlKey}']`);
+  if (icon && typeof iconFromValue === "function") {
+    icon.classList.remove("fa-volume-xmark", "fa-volume-low", "fa-volume-high");
+    icon.classList.add(iconFromValue(value));
+  }
+}
+
+function syncSidebarMonitorControl(root, monitorKey, value) {
+  const label = root.querySelector(`[data-live-monitor='${monitorKey}']`);
+  if (label) {
+    label.textContent = String(value ?? "");
+  }
+}
+
+function syncSidebarLiveControls(root = null) {
+  const sidebarRoot = getSidebarLiveControlRoot(root);
+  if (!(sidebarRoot instanceof HTMLElement)) return false;
+
+  syncSidebarRangeControl(sidebarRoot, "rate", getLiveRate(), formatRate);
+  syncSidebarMonitorControl(sidebarRoot, "music", getNormalizationMonitorLabel("music"));
+  syncSidebarMonitorControl(sidebarRoot, "ambience", getNormalizationMonitorLabel("ambience"));
+  syncSidebarRangeControl(sidebarRoot, "music-volume", getLiveMusicVolume(), formatVolumePercent, {
+    iconFromValue: getVolumeIconClass,
+  });
+  syncSidebarRangeControl(sidebarRoot, "ambience-volume", getLiveAmbienceVolume(), formatVolumePercent, {
+    iconFromValue: getVolumeIconClass,
+  });
+
+  return true;
+}
+
 function injectPlaylistDirectoryRateControl(root) {
   const existing = root.querySelector(`.${MODULE_ID}-sidebar-rate`);
   if (!canManagePlaylistControls()) {
@@ -1410,14 +1515,19 @@ function injectPlaylistDirectoryRateControl(root) {
   });
   syncRateCollapseUi();
 
-  const getVolumeIconClass = (volume) => {
-    const normalized = normalizeVolume(volume);
-    if (normalized <= 0) return "fa-volume-xmark";
-    if (normalized < 0.5) return "fa-volume-low";
-    return "fa-volume-high";
-  };
-
-  const addControlRow = ({ labelText, min, max, step, value, format, onInput, container, showValue = true, iconFromValue = null }) => {
+  const addControlRow = ({
+    labelText,
+    min,
+    max,
+    step,
+    value,
+    format,
+    onInput,
+    container,
+    showValue = true,
+    iconFromValue = null,
+    controlKey = null,
+  }) => {
     const rowTag = String(container?.tagName ?? "").toUpperCase() === "OL" ? "li" : "div";
     const row = document.createElement(rowTag);
     row.classList.add("control-row");
@@ -1433,12 +1543,18 @@ function injectPlaylistDirectoryRateControl(root) {
     input.max = String(max);
     input.step = String(step);
     input.value = String(value);
+    if (controlKey) {
+      input.dataset.liveControl = controlKey;
+    }
 
     let icon = null;
     if (typeof iconFromValue === "function") {
       icon = document.createElement("i");
       icon.classList.add("volume-icon", "fa-fw", "fa-solid");
       icon.classList.add(iconFromValue(Number(input.value)));
+      if (controlKey) {
+        icon.dataset.liveControlIcon = controlKey;
+      }
     }
 
     let valueLabel = null;
@@ -1446,6 +1562,9 @@ function injectPlaylistDirectoryRateControl(root) {
       valueLabel = document.createElement("span");
       valueLabel.classList.add("value");
       valueLabel.textContent = format(Number(input.value));
+      if (controlKey) {
+        valueLabel.dataset.liveControlValue = controlKey;
+      }
     }
 
     input.addEventListener("input", async (event) => {
@@ -1465,7 +1584,7 @@ function injectPlaylistDirectoryRateControl(root) {
     container.append(row);
   };
 
-  const addMonitorRow = ({ labelText, valueText, container }) => {
+  const addMonitorRow = ({ labelText, valueText, container, monitorKey = null }) => {
     const row = document.createElement("div");
     row.classList.add("monitor-row");
 
@@ -1476,6 +1595,9 @@ function injectPlaylistDirectoryRateControl(root) {
     const value = document.createElement("span");
     value.classList.add("monitor-value");
     value.textContent = valueText;
+    if (monitorKey) {
+      value.dataset.liveMonitor = monitorKey;
+    }
 
     row.append(label, value);
     container.append(row);
@@ -1496,18 +1618,21 @@ function injectPlaylistDirectoryRateControl(root) {
       return rate;
     },
     container: speedBody,
+    controlKey: "rate",
   });
 
   addMonitorRow({
     labelText: t("App.MusicNormalization", localizedFallback("РќРѕСЂРј. РјСѓР·С‹РєРё:", "Norm. music:")),
     valueText: getNormalizationMonitorLabel("music"),
     container: speedBody,
+    monitorKey: "music",
   });
 
   addMonitorRow({
     labelText: t("App.AmbienceNormalization", localizedFallback("РќРѕСЂРј. СЌРјР±РёРµРЅСЃР°:", "Norm. ambience:")),
     valueText: getNormalizationMonitorLabel("ambience"),
     container: speedBody,
+    monitorKey: "ambience",
   });
 
   addControlRow({
@@ -1527,6 +1652,7 @@ function injectPlaylistDirectoryRateControl(root) {
     container: rateBody,
     showValue: false,
     iconFromValue: getVolumeIconClass,
+    controlKey: "music-volume",
   });
 
   addControlRow({
@@ -1546,6 +1672,7 @@ function injectPlaylistDirectoryRateControl(root) {
     container: rateBody,
     showValue: false,
     iconFromValue: getVolumeIconClass,
+    controlKey: "ambience-volume",
   });
 
   header.appendChild(wrap);
@@ -1825,7 +1952,7 @@ function buildSidebarPlaylistsHtml(playlists, tracks) {
   return playlists
     .map((playlist) => {
       const active = current?.mode === "playlist" && current?.playlistId === playlist.id;
-      const validTrackIds = normalizeArray(playlist.trackIds).filter((id) => trackMap.has(id));
+      const validTrackIds = getMusicPlaylistOrderedTrackIds(playlist, new Set(trackMap.keys()));
       const count = validTrackIds.length;
       const loopEnabled = Boolean(playlist.loop);
       const shuffleEnabled = Boolean(playlist.shuffle);
@@ -2591,10 +2718,7 @@ function getEffectiveMusicVolume({
 
 function getNormalizationMonitorLabel(channel) {
   const display = getSessionNormalizationDisplay(channel);
-  return localizedFallback(
-    `трек ${formatMilliHertz(display.originalDb)} | сейчас ${formatMilliHertz(display.currentDb)} | цель ${formatMilliHertz(display.targetDb)}`,
-    `track ${formatMilliHertz(display.originalDb)} | current ${formatMilliHertz(display.currentDb)} | target ${formatMilliHertz(display.targetDb)}`,
-  );
+  return `${formatCompactMilliHertz(display.originalDb)} → ${formatCompactMilliHertz(display.targetDb)}`;
 }
 
 function getTrackNormalizationCacheKey(track, filePath) {
@@ -3233,11 +3357,11 @@ async function scanNormalizationTracks(channel) {
     if (!tracksByFile.size) {
       const summary = channelKey === "ambience"
         ? localizedFallback(
-          `TS-DJ-MUSIC: СЃРєР°РЅ СЌРјР±РёРµРЅСЃР° Р·Р°РІРµСЂС€С‘РЅ. РЈСЃРїРµС€РЅРѕ ${scanned}, РїСЂРѕРїСѓС‰РµРЅРѕ ${skipped}, РѕС€РёР±РѕРє ${failed}.`,
+          `TS-DJ-MUSIC: скан эмбиенса завершён. Успешно ${scanned}, пропущено ${skipped}, ошибок ${failed}.`,
           `TS-DJ-MUSIC: ambience scan finished. Scanned ${scanned}, skipped ${skipped}, failed ${failed}.`,
         )
         : localizedFallback(
-          `TS-DJ-MUSIC: СЃРєР°РЅ РјСѓР·С‹РєРё Р·Р°РІРµСЂС€С‘РЅ. РЈСЃРїРµС€РЅРѕ ${scanned}, РїСЂРѕРїСѓС‰РµРЅРѕ ${skipped}, РѕС€РёР±РѕРє ${failed}.`,
+          `TS-DJ-MUSIC: скан музыки завершён. Успешно ${scanned}, пропущено ${skipped}, ошибок ${failed}.`,
           `TS-DJ-MUSIC: music scan finished. Scanned ${scanned}, skipped ${skipped}, failed ${failed}.`,
         );
       ui.notifications.info?.(summary);
@@ -3981,8 +4105,221 @@ function sortEntriesByName(entries) {
   });
 }
 
+function normalizeMusicPlaylistFolderEntry(raw, seenTrackIds = new Set()) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  const trackIds = normalizeArray(source.trackIds)
+    .map((trackId) => String(trackId ?? "").trim())
+    .filter((trackId) => trackId && !seenTrackIds.has(trackId));
+  for (const trackId of trackIds) {
+    seenTrackIds.add(trackId);
+  }
+
+  return {
+    id: String(source.id ?? "").trim() || foundry.utils.randomID(),
+    name: String(source.name ?? "").trim(),
+    collapsed: Boolean(source.collapsed),
+    trackIds,
+  };
+}
+
+function normalizeMusicPlaylistEntry(raw) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  const seenTrackIds = new Set();
+  const rootTrackIds = normalizeArray(source.trackIds)
+    .map((trackId) => String(trackId ?? "").trim())
+    .filter((trackId) => trackId && !seenTrackIds.has(trackId));
+  for (const trackId of rootTrackIds) {
+    seenTrackIds.add(trackId);
+  }
+
+  const folderTrackIds = normalizeArray(source.folders)
+    .flatMap((folder) => normalizeMusicPlaylistFolderEntry(folder, seenTrackIds).trackIds);
+  return {
+    ...source,
+    id: String(source.id ?? "").trim() || foundry.utils.randomID(),
+    name: String(source.name ?? "").trim(),
+    loop: Boolean(source.loop),
+    shuffle: Boolean(source.shuffle),
+    trackIds: [...rootTrackIds, ...folderTrackIds],
+    folders: [],
+  };
+}
+
+function cloneMusicPlaylistEntry(raw) {
+  const playlist = normalizeMusicPlaylistEntry(raw);
+  return {
+    ...playlist,
+    trackIds: [...playlist.trackIds],
+    folders: playlist.folders.map((folder) => ({
+      ...folder,
+      trackIds: [...folder.trackIds],
+    })),
+  };
+}
+
+function getMusicPlaylistFolders(playlist) {
+  return [];
+}
+
+function getMusicPlaylistOrderedTrackIds(playlist, validTrackIds = null) {
+  const normalized = normalizeMusicPlaylistEntry(playlist);
+  const orderedIds = [...normalized.trackIds];
+  if (!(validTrackIds instanceof Set)) return orderedIds;
+  return orderedIds.filter((trackId) => validTrackIds.has(trackId));
+}
+
+function getMusicPlaylistTrackContainerIds(playlist, folderId = null) {
+  const normalized = normalizeMusicPlaylistEntry(playlist);
+  if (!folderId) {
+    return [...normalized.trackIds];
+  }
+
+  const folder = normalized.folders.find((entry) => entry.id === folderId);
+  return folder ? [...folder.trackIds] : [];
+}
+
+function upsertMusicPlaylistTrackContainerIds(playlist, folderId, trackIds) {
+  const normalized = cloneMusicPlaylistEntry(playlist);
+  const nextTrackIds = normalizeArray(trackIds)
+    .map((trackId) => String(trackId ?? "").trim())
+    .filter(Boolean);
+
+  if (!folderId) {
+    normalized.trackIds = nextTrackIds;
+    return normalizeMusicPlaylistEntry(normalized);
+  }
+
+  const folderIndex = normalized.folders.findIndex((entry) => entry.id === folderId);
+  if (folderIndex === -1) return normalized;
+
+  normalized.folders[folderIndex] = {
+    ...normalized.folders[folderIndex],
+    trackIds: nextTrackIds,
+  };
+  return normalizeMusicPlaylistEntry(normalized);
+}
+
+function removeTrackFromMusicPlaylistEntry(playlist, trackId) {
+  if (!trackId) return cloneMusicPlaylistEntry(playlist);
+  const normalized = cloneMusicPlaylistEntry(playlist);
+  normalized.trackIds = normalized.trackIds.filter((entry) => entry !== trackId);
+  normalized.folders = normalized.folders.map((folder) => ({
+    ...folder,
+    trackIds: folder.trackIds.filter((entry) => entry !== trackId),
+  }));
+  return normalizeMusicPlaylistEntry(normalized);
+}
+
+function placeTrackInMusicPlaylistEntry(playlist, trackId, {
+  folderId = null,
+  beforeTrackId = null,
+  insertAfter = false,
+} = {}) {
+  const normalizedTrackId = String(trackId ?? "").trim();
+  if (!normalizedTrackId) return cloneMusicPlaylistEntry(playlist);
+
+  const basePlaylist = cloneMusicPlaylistEntry(playlist);
+  const normalizedFolderId = String(folderId ?? "").trim() || null;
+  const targetFolderId = normalizedFolderId && basePlaylist.folders.some((entry) => entry.id === normalizedFolderId)
+    ? normalizedFolderId
+    : null;
+
+  let nextPlaylist = removeTrackFromMusicPlaylistEntry(basePlaylist, normalizedTrackId);
+  const containerTrackIds = getMusicPlaylistTrackContainerIds(nextPlaylist, targetFolderId);
+  let insertIndex = containerTrackIds.length;
+  if (beforeTrackId) {
+    const targetIndex = containerTrackIds.indexOf(String(beforeTrackId));
+    if (targetIndex !== -1) {
+      insertIndex = insertAfter ? targetIndex + 1 : targetIndex;
+    }
+  }
+
+  containerTrackIds.splice(clampNumber(insertIndex, 0, containerTrackIds.length), 0, normalizedTrackId);
+  nextPlaylist = upsertMusicPlaylistTrackContainerIds(nextPlaylist, targetFolderId, containerTrackIds);
+  return normalizeMusicPlaylistEntry(nextPlaylist);
+}
+
+function createMusicPlaylistFolderEntry(name = "") {
+  return {
+    id: foundry.utils.randomID(),
+    name: String(name ?? "").trim(),
+    collapsed: false,
+    trackIds: [],
+  };
+}
+
+function normalizeTrackFolderEntry(raw) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  return {
+    id: String(source.id ?? "").trim() || foundry.utils.randomID(),
+    name: String(source.name ?? "").trim(),
+    collapsed: Boolean(source.collapsed),
+  };
+}
+
+function normalizeTrackFolderId(value, folders = []) {
+  const folderId = String(value ?? "").trim();
+  if (!folderId) return "";
+  return normalizeArray(folders).some((folder) => String(folder?.id ?? "") === folderId)
+    ? folderId
+    : "";
+}
+
+function createTrackFolderEntry(name = "") {
+  return {
+    id: foundry.utils.randomID(),
+    name: String(name ?? "").trim(),
+    collapsed: false,
+  };
+}
+
 function getPlaylistTrackEditorName(track) {
   return untitledName(track?.name);
+}
+
+function getPlaylistTrackGroupsForEditor(tracks, folders = [], selectedTrackIds = []) {
+  const normalizedTracks = tracks.map((track) => ({
+    ...track,
+    name: getPlaylistTrackEditorName(track),
+  }));
+  const sortedTracks = sortEntriesByName(normalizedTracks);
+  const sortedFolders = sortEntriesByName(normalizeArray(folders).map((folder) => normalizeTrackFolderEntry(folder)));
+  const orderedTracks = selectedTrackIds.length
+    ? (() => {
+      const selectedSet = new Set(selectedTrackIds);
+      const trackMap = new Map(sortedTracks.map((track) => [track.id, track]));
+      const selectedTracks = selectedTrackIds
+        .map((trackId) => trackMap.get(trackId))
+        .filter(Boolean);
+      const unselectedTracks = sortedTracks.filter((track) => !selectedSet.has(track.id));
+      return [...selectedTracks, ...unselectedTracks];
+    })()
+    : sortedTracks;
+
+  const groups = [
+    {
+      id: "",
+      key: "__root__",
+      name: t("Common.WithoutFolder", "Without folder"),
+      tracks: [],
+    },
+    ...sortedFolders.map((folder) => ({
+      id: folder.id,
+      key: folder.id,
+      name: untitledName(folder.name),
+      tracks: [],
+    })),
+  ];
+  const groupMap = new Map(groups.map((group) => [group.id, group]));
+  const validFolderIds = new Set(sortedFolders.map((folder) => folder.id));
+
+  for (const track of orderedTracks) {
+    const folderId = normalizeTrackFolderId(track.folderId, sortedFolders);
+    const targetGroup = groupMap.get(validFolderIds.has(folderId) ? folderId : "");
+    targetGroup?.tracks.push(track);
+  }
+
+  return groups.filter((group) => group.tracks.length > 0);
 }
 
 function getPlaylistTracksForEditor(tracks, selectedTrackIds = []) {
@@ -4032,18 +4369,52 @@ function initPlaylistTrackPicker(form) {
     row.classList.toggle("is-checked", checkbox.checked);
   };
 
+  const updateGroupState = (groupHeader) => {
+    if (!(groupHeader instanceof HTMLElement)) return;
+    const toggle = groupHeader.querySelector("input[data-folder-toggle]");
+    if (!(toggle instanceof HTMLInputElement)) return;
+
+    const folderKey = groupHeader.dataset.folderKey ?? "";
+    const rowCheckboxes = [...list.querySelectorAll(`[data-track-row][data-folder-key='${folderKey}'] input[name='trackIds']`)]
+      .filter((entry) => entry instanceof HTMLInputElement);
+    const checkedCount = rowCheckboxes.filter((checkbox) => checkbox.checked).length;
+    toggle.checked = rowCheckboxes.length > 0 && checkedCount === rowCheckboxes.length;
+    toggle.indeterminate = checkedCount > 0 && checkedCount < rowCheckboxes.length;
+  };
+
   list.querySelectorAll("[data-track-row]").forEach((row) => {
     updateCheckedState(row);
+  });
+  list.querySelectorAll("[data-track-group]").forEach((groupHeader) => {
+    updateGroupState(groupHeader);
   });
   syncPlaylistTrackOrderInput(form);
 
   let draggedRow = null;
 
   list.addEventListener("change", (event) => {
+    const folderToggle = event.target.closest("input[data-folder-toggle]");
+    if (folderToggle instanceof HTMLInputElement) {
+      const groupHeader = folderToggle.closest("[data-track-group]");
+      const folderKey = groupHeader instanceof HTMLElement ? (groupHeader.dataset.folderKey ?? "") : "";
+      list.querySelectorAll(`[data-track-row][data-folder-key='${folderKey}'] input[name='trackIds']`).forEach((checkbox) => {
+        if (checkbox instanceof HTMLInputElement) {
+          checkbox.checked = folderToggle.checked;
+          const row = checkbox.closest("[data-track-row]");
+          if (row instanceof HTMLElement) updateCheckedState(row);
+        }
+      });
+      updateGroupState(groupHeader);
+      syncPlaylistTrackOrderInput(form);
+      return;
+    }
+
     const checkbox = event.target.closest("input[name='trackIds']");
     if (!(checkbox instanceof HTMLInputElement)) return;
     const row = checkbox.closest("[data-track-row]");
     if (row instanceof HTMLElement) updateCheckedState(row);
+    const groupHeader = row?.closest("[data-playlist-track-picker]")?.querySelector(`[data-track-group][data-folder-key='${row?.dataset.folderKey ?? ""}']`);
+    if (groupHeader instanceof HTMLElement) updateGroupState(groupHeader);
     syncPlaylistTrackOrderInput(form);
   });
 
@@ -4092,7 +4463,11 @@ function getTracks() {
 }
 
 function getPlaylists() {
-  return normalizeArray(storageState.playlists);
+  return normalizeArray(storageState.playlists).map((entry) => normalizeMusicPlaylistEntry(entry));
+}
+
+function getTrackFolders() {
+  return normalizeArray(storageState.trackFolders).map((entry) => normalizeTrackFolderEntry(entry));
 }
 
 function getAmbienceTracks() {
@@ -4101,6 +4476,10 @@ function getAmbienceTracks() {
 
 function getAmbiencePlaylists() {
   return normalizeArray(storageState.ambiencePlaylists);
+}
+
+function getAmbienceTrackFolders() {
+  return normalizeArray(storageState.ambienceTrackFolders).map((entry) => normalizeTrackFolderEntry(entry));
 }
 
 function getAmbienceAllowConcurrent() {
@@ -4117,7 +4496,11 @@ async function setStorageData(nextData) {
     if (!storageLoaded) {
       await initializeStorageState();
     }
-    applyStorageData(nextData);
+    const mergedData = {
+      ...cloneStorageData(),
+      ...(nextData && typeof nextData === "object" ? nextData : {}),
+    };
+    applyStorageData(mergedData);
     await persistStorageState();
   } catch (error) {
     console.warn(`${MODULE_ID} | failed to replace storage data`, error);
@@ -4148,7 +4531,11 @@ async function setTracks(tracks) {
 }
 
 async function setPlaylists(playlists) {
-  await setStorageValue("playlists", normalizeArray(playlists));
+  await setStorageValue("playlists", normalizeArray(playlists).map((entry) => normalizeMusicPlaylistEntry(entry)));
+}
+
+async function setTrackFolders(folders) {
+  await setStorageValue("trackFolders", normalizeArray(folders).map((entry) => normalizeTrackFolderEntry(entry)));
 }
 
 async function setAmbienceTracks(tracks) {
@@ -4157,6 +4544,10 @@ async function setAmbienceTracks(tracks) {
 
 async function setAmbiencePlaylists(playlists) {
   await setStorageValue("ambiencePlaylists", normalizeArray(playlists));
+}
+
+async function setAmbienceTrackFolders(folders) {
+  await setStorageValue("ambienceTrackFolders", normalizeArray(folders).map((entry) => normalizeTrackFolderEntry(entry)));
 }
 
 async function setAmbienceAllowConcurrent(enabled) {
@@ -4178,9 +4569,9 @@ async function persistStoredNormalizationReference(channel, referenceDb) {
 }
 
 function countPlaylistTracks(playlist, validTrackIds) {
-  const ids = normalizeArray(playlist?.trackIds);
+  const ids = getMusicPlaylistOrderedTrackIds(playlist, validTrackIds instanceof Set ? validTrackIds : null);
   if (!(validTrackIds instanceof Set)) return ids.length;
-  return ids.filter((id) => validTrackIds.has(id)).length;
+  return ids.length;
 }
 
 function reorderTrackIds(trackIds, movedTrackId, targetTrackId, insertAfter = false) {
@@ -4477,10 +4868,8 @@ async function setLiveRate(rate, { apply = true, sync = true } = {}) {
       rate: normalized,
       apply: Boolean(apply),
     });
-  } else {
-    refreshLiveControlsUi();
   }
-
+  refreshLiveControlsUi();
 }
 
 async function setLiveMusicVolume(volume, { apply = true, sync = true } = {}) {
@@ -4500,9 +4889,8 @@ async function setLiveMusicVolume(volume, { apply = true, sync = true } = {}) {
       volume: normalized,
       apply: Boolean(apply),
     });
-  } else {
-    refreshLiveControlsUi();
   }
+  refreshLiveControlsUi();
 }
 
 async function setLiveAmbienceVolume(volume, { apply = true, sync = true } = {}) {
@@ -4522,9 +4910,8 @@ async function setLiveAmbienceVolume(volume, { apply = true, sync = true } = {})
       volume: normalized,
       apply: Boolean(apply),
     });
-  } else {
-    refreshLiveControlsUi();
   }
+  refreshLiveControlsUi();
 }
 
 function applyMusicVolumeToCurrentPlayback({ volume = getLiveMusicVolume(), force = false } = {}) {
@@ -4617,7 +5004,9 @@ function refreshLiveControlsUi() {
   refreshManagerRuntimeUi();
   const root = getRoot(ui.playlists?.element);
   if (root) {
-    injectPlaylistDirectoryRateControl(root);
+    if (!syncSidebarLiveControls(root)) {
+      injectPlaylistDirectoryRateControl(root);
+    }
   }
 }
 
@@ -4701,7 +5090,7 @@ async function playPlaylistById(playlistId, options = {}) {
 
   const tracks = getTracks();
   const trackMap = new Map(tracks.map((entry) => [entry.id, entry]));
-  const playlistQueue = normalizeArray(playlist.trackIds).filter((id) => trackMap.has(id));
+  const playlistQueue = getMusicPlaylistOrderedTrackIds(playlist, new Set(trackMap.keys()));
   const overrideQueue = normalizeArray(queueOverride).filter((id) => trackMap.has(id));
   const shuffleEnabled = typeof playlistShuffleOverride === "boolean"
     ? playlistShuffleOverride
@@ -5601,17 +5990,31 @@ class TsDjMusicApp extends Application {
         normalizeTitle: t("Common.Normalize", "Normalize"),
         normalizeLabel: yesNo(isTrackNormalizationEnabled(track)),
         loop: Boolean(track.loop),
+        folderId: String(track.folderId ?? "").trim(),
         active,
         playAction: active ? (paused ? "resume-current" : "pause-current") : "play-track",
         playIcon: active && !paused ? "fa-pause" : "fa-play",
+        draggable: true,
       };
     }));
 
     const trackMap = new Map(tracks.map((track) => [track.id, track]));
+    const trackFolders = sortEntriesByName(getTrackFolders().map((folder) => {
+      const folderId = String(folder.id ?? "").trim();
+      const folderTracks = tracks.filter((track) => track.folderId === folderId);
+      return {
+        ...folder,
+        name: untitledName(folder.name),
+        trackCount: folderTracks.length,
+        collapsed: Boolean(folder.collapsed),
+        trackEntries: folderTracks,
+        hasTracks: folderTracks.length > 0,
+      };
+    }));
+    const looseTracks = tracks.filter((track) => !normalizeTrackFolderId(track.folderId, trackFolders));
 
     const playlists = sortEntriesByName(getPlaylists().map((playlist) => {
-      const trackIds = normalizeArray(playlist.trackIds);
-      const validTrackIds = trackIds.filter((id) => trackMap.has(id));
+      const validTrackIds = getMusicPlaylistOrderedTrackIds(playlist, new Set(trackMap.keys()));
       const trackNames = validTrackIds
         .map((id) => trackMap.get(id)?.name)
         .filter(Boolean)
@@ -5668,11 +6071,27 @@ class TsDjMusicApp extends Application {
         normalizeTitle: t("Common.Normalize", "Normalize"),
         normalizeLabel: yesNo(isTrackNormalizationEnabled(track)),
         loop: Boolean(track.loop),
+        folderId: String(track.folderId ?? "").trim(),
         active,
         playAction: active ? "stop-ambience-track" : "play-ambience-track",
         playIcon: active ? "fa-stop" : "fa-play",
+        draggable: true,
       };
     }));
+
+    const ambienceTrackFolders = sortEntriesByName(getAmbienceTrackFolders().map((folder) => {
+      const folderId = String(folder.id ?? "").trim();
+      const folderTracks = ambienceTracks.filter((track) => track.folderId === folderId);
+      return {
+        ...folder,
+        name: untitledName(folder.name),
+        trackCount: folderTracks.length,
+        collapsed: Boolean(folder.collapsed),
+        trackEntries: folderTracks,
+        hasTracks: folderTracks.length > 0,
+      };
+    }));
+    const looseAmbienceTracks = ambienceTracks.filter((track) => !normalizeTrackFolderId(track.folderId, ambienceTrackFolders));
 
     const ambienceTrackMap = new Map(ambienceTracks.map((track) => [track.id, track]));
     const ambiencePlaylists = sortEntriesByName(getAmbiencePlaylists().map((playlist) => {
@@ -5745,13 +6164,25 @@ class TsDjMusicApp extends Application {
       ambienceAllowConcurrent: getAmbienceAllowConcurrent(),
       files,
       tracks,
+      trackFolders,
+      looseTracks,
+      musicRootCollapsed: !Boolean(managerTrackRootExpandState.music),
+      musicRootTrackCount: looseTracks.length,
       playlists,
       ambienceTracks,
+      ambienceTrackFolders,
+      looseAmbienceTracks,
+      ambienceRootCollapsed: !Boolean(managerTrackRootExpandState.ambience),
+      ambienceRootTrackCount: looseAmbienceTracks.length,
       ambiencePlaylists,
       hasFiles: files.length > 0,
       hasTracks: tracks.length > 0,
+      hasTrackFolders: trackFolders.length > 0,
+      hasTrackGroups: tracks.length > 0 || trackFolders.length > 0,
       hasPlaylists: playlists.length > 0,
       hasAmbienceTracks: ambienceTracks.length > 0,
+      hasAmbienceTrackFolders: ambienceTrackFolders.length > 0,
+      hasAmbienceTrackGroups: ambienceTracks.length > 0 || ambienceTrackFolders.length > 0,
       hasAmbiencePlaylists: ambiencePlaylists.length > 0,
       isPlaying: Boolean(playbackState.current),
       currentLabel,
@@ -5785,18 +6216,27 @@ class TsDjMusicApp extends Application {
       });
       if (!root.dataset.managerPlaylistDndBound) {
         root.dataset.managerPlaylistDndBound = "true";
+        const resetManagerPlaylistDragState = () => {
+          managerPlaylistDragState.source = null;
+          managerPlaylistDragState.kind = null;
+          managerPlaylistDragState.playlistId = null;
+          managerPlaylistDragState.folderId = null;
+          managerPlaylistDragState.trackId = null;
+        };
 
         root.addEventListener("dragstart", (event) => {
           const row = event.target.closest("[data-manager-playlist-track-row]");
-          if (!(row instanceof HTMLElement)) return;
+          if (row instanceof HTMLElement) {
+            managerPlaylistDragState.source = "playlist";
+            managerPlaylistDragState.kind = row.dataset.playlistKind ?? null;
+            managerPlaylistDragState.playlistId = row.dataset.playlistId ?? null;
+            managerPlaylistDragState.folderId = row.dataset.folderId ?? null;
+            managerPlaylistDragState.trackId = row.dataset.trackId ?? null;
+            row.classList.add("is-dragging");
 
-          managerPlaylistDragState.kind = row.dataset.playlistKind ?? null;
-          managerPlaylistDragState.playlistId = row.dataset.playlistId ?? null;
-          managerPlaylistDragState.trackId = row.dataset.trackId ?? null;
-          row.classList.add("is-dragging");
-
-          event.dataTransfer?.setData("text/plain", managerPlaylistDragState.trackId ?? "");
-          if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer?.setData("text/plain", managerPlaylistDragState.trackId ?? "");
+            if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+          }
         });
 
         root.addEventListener("dragend", (event) => {
@@ -5804,9 +6244,7 @@ class TsDjMusicApp extends Application {
           if (row instanceof HTMLElement) {
             row.classList.remove("is-dragging");
           }
-          managerPlaylistDragState.kind = null;
-          managerPlaylistDragState.playlistId = null;
-          managerPlaylistDragState.trackId = null;
+          resetManagerPlaylistDragState();
         });
 
         root.addEventListener("dragover", (event) => {
@@ -5815,11 +6253,12 @@ class TsDjMusicApp extends Application {
           if (!managerPlaylistDragState.trackId) return;
           if (list.dataset.playlistKind !== managerPlaylistDragState.kind) return;
           if (list.dataset.playlistId !== managerPlaylistDragState.playlistId) return;
+          event.preventDefault();
+          autoScrollContainerOnDrag(event, list.closest(".ts-dj-list"));
 
           const targetRow = event.target.closest("[data-manager-playlist-track-row]");
           if (!(targetRow instanceof HTMLElement)) return;
           if (targetRow.dataset.trackId === managerPlaylistDragState.trackId) return;
-          event.preventDefault();
 
           const draggedRow = [...list.querySelectorAll("[data-manager-playlist-track-row]")]
             .find((row) => row instanceof HTMLElement && row.dataset.trackId === managerPlaylistDragState.trackId);
@@ -5849,9 +6288,67 @@ class TsDjMusicApp extends Application {
             await this.#setAmbiencePlaylistTrackOrder(list.dataset.playlistId, orderedVisibleTrackIds);
           }
 
-          managerPlaylistDragState.kind = null;
-          managerPlaylistDragState.playlistId = null;
-          managerPlaylistDragState.trackId = null;
+          resetManagerPlaylistDragState();
+        });
+      }
+
+      if (!root.dataset.managerTrackFolderDndBound) {
+        root.dataset.managerTrackFolderDndBound = "true";
+        const clearTrackDropZones = () => {
+          root.querySelectorAll("[data-manager-track-drop-zone].is-drop-target").forEach((zone) => {
+            zone.classList.remove("is-drop-target");
+          });
+        };
+        const resetTrackFolderDragState = () => {
+          clearTrackDropZones();
+          managerTrackFolderDragState.kind = null;
+          managerTrackFolderDragState.trackId = null;
+        };
+
+        root.addEventListener("dragstart", (event) => {
+          const row = event.target.closest("[data-manager-track-row]");
+          if (!(row instanceof HTMLElement)) return;
+          managerTrackFolderDragState.kind = row.dataset.trackKind ?? null;
+          managerTrackFolderDragState.trackId = row.dataset.trackId ?? null;
+          row.classList.add("is-dragging");
+          event.dataTransfer?.setData("text/plain", managerTrackFolderDragState.trackId ?? "");
+          if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+        });
+
+        root.addEventListener("dragend", (event) => {
+          const row = event.target.closest("[data-manager-track-row]");
+          if (row instanceof HTMLElement) {
+            row.classList.remove("is-dragging");
+          }
+          resetTrackFolderDragState();
+        });
+
+        root.addEventListener("dragover", (event) => {
+          const dropZone = event.target.closest("[data-manager-track-drop-zone]");
+          if (!(dropZone instanceof HTMLElement)) return;
+          if (!managerTrackFolderDragState.trackId) return;
+          if (dropZone.dataset.trackKind !== managerTrackFolderDragState.kind) return;
+          event.preventDefault();
+          autoScrollContainerOnDrag(event, dropZone.closest(".ts-dj-list"));
+          clearTrackDropZones();
+          dropZone.classList.add("is-drop-target");
+        });
+
+        root.addEventListener("drop", async (event) => {
+          const dropZone = event.target.closest("[data-manager-track-drop-zone]");
+          if (!(dropZone instanceof HTMLElement)) return;
+          if (!managerTrackFolderDragState.trackId) return;
+          if (dropZone.dataset.trackKind !== managerTrackFolderDragState.kind) return;
+          event.preventDefault();
+
+          const folderId = dropZone.dataset.folderId ?? "";
+          if (managerTrackFolderDragState.kind === "music") {
+            await this.#moveTrackToFolder(managerTrackFolderDragState.trackId, folderId);
+          } else if (managerTrackFolderDragState.kind === "ambience") {
+            await this.#moveAmbienceTrackToFolder(managerTrackFolderDragState.trackId, folderId);
+          }
+
+          resetTrackFolderDragState();
         });
       }
     }
@@ -5874,7 +6371,7 @@ class TsDjMusicApp extends Application {
           await this.#deleteFilesBlock();
           break;
         case "create-track":
-          await this.#createOrEditTrack();
+          await this.#createOrEditTrack(null, { folderId: event.currentTarget.dataset.folderId ?? "" });
           break;
         case "edit-track":
           await this.#createOrEditTrack(id);
@@ -5891,6 +6388,19 @@ class TsDjMusicApp extends Application {
         case "toggle-track-loop":
           await toggleTrackLoop(id);
           await this.#refreshCards([MANAGER_CARD_IDS.musicTracks]);
+          break;
+        case "create-track-folder":
+          await this.#createTrackFolder();
+          break;
+        case "toggle-track-folder":
+          await this.#toggleTrackFolderCollapsed(id);
+          break;
+        case "toggle-track-root-folder":
+          managerTrackRootExpandState.music = !managerTrackRootExpandState.music;
+          await this.#refreshCards([MANAGER_CARD_IDS.musicTracks]);
+          break;
+        case "delete-track-folder":
+          await this.#deleteTrackFolder(id);
           break;
         case "create-playlist":
           await this.#createOrEditPlaylist();
@@ -6006,7 +6516,7 @@ class TsDjMusicApp extends Application {
           }
           break;
         case "create-ambience-track":
-          await this.#createOrEditAmbienceTrack();
+          await this.#createOrEditAmbienceTrack(null, { folderId: event.currentTarget.dataset.folderId ?? "" });
           break;
         case "edit-ambience-track":
           await this.#createOrEditAmbienceTrack(id);
@@ -6026,6 +6536,19 @@ class TsDjMusicApp extends Application {
         case "toggle-ambience-track-loop":
           await toggleAmbienceTrackLoop(id);
           await this.#refreshCards([MANAGER_CARD_IDS.ambienceTracks]);
+          break;
+        case "create-ambience-track-folder":
+          await this.#createAmbienceTrackFolder();
+          break;
+        case "toggle-ambience-track-folder":
+          await this.#toggleAmbienceTrackFolderCollapsed(id);
+          break;
+        case "toggle-ambience-track-root-folder":
+          managerTrackRootExpandState.ambience = !managerTrackRootExpandState.ambience;
+          await this.#refreshCards([MANAGER_CARD_IDS.ambienceTracks]);
+          break;
+        case "delete-ambience-track-folder":
+          await this.#deleteAmbienceTrackFolder(id);
           break;
         case "create-ambience-playlist":
           await this.#createOrEditAmbiencePlaylist();
@@ -6202,10 +6725,14 @@ class TsDjMusicApp extends Application {
 
     const nextFiles = files.filter((entry) => entry.id !== fileId);
     const nextTracks = tracks.filter((track) => track.fileId !== fileId);
-    const nextPlaylists = getPlaylists().map((playlist) => ({
-      ...playlist,
-      trackIds: normalizeArray(playlist.trackIds).filter((id) => !removedTrackIds.includes(id)),
-    }));
+    const removedTrackIdSet = new Set(removedTrackIds);
+    const nextPlaylists = getPlaylists().map((playlist) => {
+      let nextPlaylist = cloneMusicPlaylistEntry(playlist);
+      for (const trackId of removedTrackIdSet) {
+        nextPlaylist = removeTrackFromMusicPlaylistEntry(nextPlaylist, trackId);
+      }
+      return nextPlaylist;
+    });
     const nextAmbienceTracks = ambienceTracks.filter((track) => track.fileId !== fileId);
     const nextAmbiencePlaylists = getAmbiencePlaylists().map((playlist) => ({
       ...playlist,
@@ -6258,8 +6785,12 @@ class TsDjMusicApp extends Application {
     const tracks = getTracks();
     const ambienceTracks = getAmbienceTracks();
     const nextPlaylists = getPlaylists().map((playlist) => ({
-      ...playlist,
+      ...cloneMusicPlaylistEntry(playlist),
       trackIds: [],
+      folders: getMusicPlaylistFolders(playlist).map((folder) => ({
+        ...folder,
+        trackIds: [],
+      })),
     }));
     const nextAmbiencePlaylists = getAmbiencePlaylists().map((playlist) => ({
       ...playlist,
@@ -6290,7 +6821,7 @@ class TsDjMusicApp extends Application {
     await this.#refreshCards(Object.values(MANAGER_CARD_IDS), { refreshToolbar: true });
   }
 
-  async #createOrEditTrack(trackId = null) {
+  async #createOrEditTrack(trackId = null, { folderId = "" } = {}) {
     const files = getFiles();
     if (!files.length) {
       notify("warn", "AddFileFirst", {}, "Add at least one file first.");
@@ -6299,9 +6830,14 @@ class TsDjMusicApp extends Application {
 
     const tracks = getTracks();
     const current = trackId ? tracks.find((entry) => entry.id === trackId) : null;
+    const folders = getTrackFolders();
+    const targetFolderId = current
+      ? normalizeTrackFolderId(current.folderId, folders)
+      : normalizeTrackFolderId(folderId, folders);
 
     const payload = await promptTrackData(current, files);
     if (!payload) return;
+    payload.folderId = targetFolderId;
 
     if (current) {
       const index = tracks.findIndex((entry) => entry.id === trackId);
@@ -6312,6 +6848,69 @@ class TsDjMusicApp extends Application {
 
     await setTracks(tracks);
     await this.#refreshCards([MANAGER_CARD_IDS.musicTracks, MANAGER_CARD_IDS.musicPlaylists]);
+  }
+
+  async #createTrackFolder() {
+    const name = await promptPlaylistFolderName();
+    if (!name) return;
+
+    const folders = getTrackFolders();
+    folders.push(createTrackFolderEntry(name));
+    await setTrackFolders(folders);
+    await this.#refreshCards([MANAGER_CARD_IDS.musicTracks]);
+  }
+
+  async #toggleTrackFolderCollapsed(folderId) {
+    if (!folderId) return;
+    const folders = getTrackFolders();
+    const folderIndex = folders.findIndex((entry) => entry.id === folderId);
+    if (folderIndex === -1) return;
+    folders[folderIndex] = {
+      ...folders[folderIndex],
+      collapsed: !Boolean(folders[folderIndex].collapsed),
+    };
+    await setTrackFolders(folders);
+    await this.#refreshCards([MANAGER_CARD_IDS.musicTracks]);
+  }
+
+  async #deleteTrackFolder(folderId) {
+    if (!folderId) return;
+    const folders = getTrackFolders();
+    const folder = folders.find((entry) => entry.id === folderId);
+    if (!folder) return;
+
+    const confirmed = await Dialog.confirm({
+      title: t("Dialogs.DeleteFolderTitle", "Delete folder"),
+      content: tf("Dialogs.DeleteFolderContent", {
+        name: escapeHtml(untitledName(folder.name)),
+      }, ({ name }) => `<p>Delete folder <b>${name}</b>? Tracks will be moved outside the folder.</p>`),
+    });
+    if (!confirmed) return;
+
+    const nextTracks = getTracks().map((track) => track.folderId === folderId ? { ...track, folderId: "" } : track);
+    const nextFolders = folders.filter((entry) => entry.id !== folderId);
+    await setStorageData({
+      tracks: nextTracks,
+      trackFolders: nextFolders,
+    });
+    await this.#refreshCards([MANAGER_CARD_IDS.musicTracks]);
+  }
+
+  async #moveTrackToFolder(trackId, folderId = "") {
+    if (!trackId) return;
+    const tracks = getTracks();
+    const folders = getTrackFolders();
+    const normalizedFolderId = normalizeTrackFolderId(folderId, folders);
+    const index = tracks.findIndex((entry) => entry.id === trackId);
+    if (index === -1) return;
+    if (String(tracks[index].folderId ?? "") === normalizedFolderId) return;
+
+    tracks[index] = {
+      ...tracks[index],
+      folderId: normalizedFolderId,
+    };
+    await setTracks(tracks);
+    await this.#refreshCards([MANAGER_CARD_IDS.musicTracks]);
   }
 
   async #deleteTrack(trackId) {
@@ -6326,10 +6925,7 @@ class TsDjMusicApp extends Application {
     if (!confirmed) return;
 
     const nextTracks = tracks.filter((entry) => entry.id !== trackId);
-    const nextPlaylists = getPlaylists().map((playlist) => ({
-      ...playlist,
-      trackIds: normalizeArray(playlist.trackIds).filter((id) => id !== trackId),
-    }));
+    const nextPlaylists = getPlaylists().map((playlist) => removeTrackFromMusicPlaylistEntry(playlist, trackId));
     const cleaned = await maybeRemoveEmptyPlaylists({
       musicPreviousPlaylists: getPlaylists(),
       musicNextPlaylists: nextPlaylists,
@@ -6367,8 +6963,12 @@ class TsDjMusicApp extends Application {
     if (!confirmed) return;
 
     const nextPlaylists = getPlaylists().map((playlist) => ({
-      ...playlist,
+      ...cloneMusicPlaylistEntry(playlist),
       trackIds: [],
+      folders: getMusicPlaylistFolders(playlist).map((folder) => ({
+        ...folder,
+        trackIds: [],
+      })),
     }));
     const cleaned = await maybeRemoveEmptyPlaylists({
       musicPreviousPlaylists: getPlaylists(),
@@ -6392,10 +6992,11 @@ class TsDjMusicApp extends Application {
 
   async #createOrEditPlaylist(playlistId = null) {
     const tracks = getTracks();
+    const folders = getTrackFolders();
     const playlists = getPlaylists();
     const current = playlistId ? playlists.find((entry) => entry.id === playlistId) : null;
 
-    const payload = await promptPlaylistData(current, tracks);
+    const payload = await promptPlaylistData(current, tracks, folders);
     if (!payload) return;
 
     if (current) {
@@ -6404,6 +7005,103 @@ class TsDjMusicApp extends Application {
     } else {
       playlists.push(payload);
     }
+
+    await setPlaylists(playlists);
+    await this.#refreshCards([MANAGER_CARD_IDS.musicPlaylists]);
+  }
+
+  async #createPlaylistFolder(playlistId) {
+    const playlists = getPlaylists();
+    const playlistIndex = playlists.findIndex((entry) => entry.id === playlistId);
+    if (playlistIndex === -1) return;
+
+    const name = await promptPlaylistFolderName();
+    if (!name) return;
+
+    playlists[playlistIndex] = {
+      ...cloneMusicPlaylistEntry(playlists[playlistIndex]),
+      folders: [
+        ...getMusicPlaylistFolders(playlists[playlistIndex]),
+        createMusicPlaylistFolderEntry(name),
+      ],
+    };
+
+    await setPlaylists(playlists);
+    await this.#refreshCards([MANAGER_CARD_IDS.musicPlaylists]);
+  }
+
+  async #togglePlaylistFolderCollapsed(playlistId, folderId) {
+    if (!playlistId || !folderId) return;
+
+    const playlists = getPlaylists();
+    const playlistIndex = playlists.findIndex((entry) => entry.id === playlistId);
+    if (playlistIndex === -1) return;
+
+    const nextPlaylist = cloneMusicPlaylistEntry(playlists[playlistIndex]);
+    const folderIndex = nextPlaylist.folders.findIndex((entry) => entry.id === folderId);
+    if (folderIndex === -1) return;
+
+    nextPlaylist.folders[folderIndex] = {
+      ...nextPlaylist.folders[folderIndex],
+      collapsed: !Boolean(nextPlaylist.folders[folderIndex].collapsed),
+    };
+    playlists[playlistIndex] = nextPlaylist;
+
+    await setPlaylists(playlists);
+    await this.#refreshCards([MANAGER_CARD_IDS.musicPlaylists]);
+  }
+
+  async #deletePlaylistFolder(playlistId, folderId) {
+    if (!playlistId || !folderId) return;
+
+    const playlists = getPlaylists();
+    const playlistIndex = playlists.findIndex((entry) => entry.id === playlistId);
+    if (playlistIndex === -1) return;
+
+    const nextPlaylist = cloneMusicPlaylistEntry(playlists[playlistIndex]);
+    const folder = nextPlaylist.folders.find((entry) => entry.id === folderId);
+    if (!folder) return;
+
+    const confirmed = await Dialog.confirm({
+      title: t("Dialogs.DeleteFolderTitle", "Delete folder"),
+      content: tf("Dialogs.DeleteFolderContent", {
+        name: escapeHtml(untitledName(folder.name)),
+      }, ({ name }) => `<p>Delete folder <b>${name}</b>? Tracks will be moved outside the folder.</p>`),
+    });
+    if (!confirmed) return;
+
+    nextPlaylist.trackIds = [...nextPlaylist.trackIds, ...folder.trackIds];
+    nextPlaylist.folders = nextPlaylist.folders.filter((entry) => entry.id !== folderId);
+    playlists[playlistIndex] = normalizeMusicPlaylistEntry(nextPlaylist);
+
+    await setPlaylists(playlists);
+    await this.#refreshCards([MANAGER_CARD_IDS.musicPlaylists]);
+  }
+
+  async #dropTrackIntoMusicPlaylist({
+    playlistId,
+    folderId = null,
+    trackId,
+    beforeTrackId = null,
+    insertAfter = false,
+  } = {}) {
+    const normalizedTrackId = String(trackId ?? "").trim();
+    if (!playlistId || !normalizedTrackId) return;
+
+    const tracks = getTracks();
+    if (!tracks.some((entry) => entry.id === normalizedTrackId)) return;
+
+    const playlists = getPlaylists();
+    const playlistIndex = playlists.findIndex((entry) => entry.id === playlistId);
+    if (playlistIndex === -1) return;
+
+    const currentSnapshot = JSON.stringify(cloneMusicPlaylistEntry(playlists[playlistIndex]));
+    playlists[playlistIndex] = placeTrackInMusicPlaylistEntry(playlists[playlistIndex], normalizedTrackId, {
+      folderId,
+      beforeTrackId,
+      insertAfter,
+    });
+    if (JSON.stringify(cloneMusicPlaylistEntry(playlists[playlistIndex])) === currentSnapshot) return;
 
     await setPlaylists(playlists);
     await this.#refreshCards([MANAGER_CARD_IDS.musicPlaylists]);
@@ -6485,7 +7183,7 @@ class TsDjMusicApp extends Application {
     await this.#refreshCards([MANAGER_CARD_IDS.musicPlaylists], { refreshToolbar: true });
   }
 
-  async #createOrEditAmbienceTrack(trackId = null) {
+  async #createOrEditAmbienceTrack(trackId = null, { folderId = "" } = {}) {
     const files = getFiles();
     if (!files.length) {
       notify("warn", "AddFileFirst", {}, "Add at least one file first.");
@@ -6494,8 +7192,13 @@ class TsDjMusicApp extends Application {
 
     const tracks = getAmbienceTracks();
     const current = trackId ? tracks.find((entry) => entry.id === trackId) : null;
+    const folders = getAmbienceTrackFolders();
+    const targetFolderId = current
+      ? normalizeTrackFolderId(current.folderId, folders)
+      : normalizeTrackFolderId(folderId, folders);
     const payload = await promptTrackData(current, files);
     if (!payload) return;
+    payload.folderId = targetFolderId;
 
     if (current) {
       const index = tracks.findIndex((entry) => entry.id === trackId);
@@ -6506,6 +7209,69 @@ class TsDjMusicApp extends Application {
 
     await setAmbienceTracks(tracks);
     await this.#refreshCards([MANAGER_CARD_IDS.ambienceTracks, MANAGER_CARD_IDS.ambiencePlaylists]);
+  }
+
+  async #createAmbienceTrackFolder() {
+    const name = await promptPlaylistFolderName();
+    if (!name) return;
+
+    const folders = getAmbienceTrackFolders();
+    folders.push(createTrackFolderEntry(name));
+    await setAmbienceTrackFolders(folders);
+    await this.#refreshCards([MANAGER_CARD_IDS.ambienceTracks]);
+  }
+
+  async #toggleAmbienceTrackFolderCollapsed(folderId) {
+    if (!folderId) return;
+    const folders = getAmbienceTrackFolders();
+    const folderIndex = folders.findIndex((entry) => entry.id === folderId);
+    if (folderIndex === -1) return;
+    folders[folderIndex] = {
+      ...folders[folderIndex],
+      collapsed: !Boolean(folders[folderIndex].collapsed),
+    };
+    await setAmbienceTrackFolders(folders);
+    await this.#refreshCards([MANAGER_CARD_IDS.ambienceTracks]);
+  }
+
+  async #deleteAmbienceTrackFolder(folderId) {
+    if (!folderId) return;
+    const folders = getAmbienceTrackFolders();
+    const folder = folders.find((entry) => entry.id === folderId);
+    if (!folder) return;
+
+    const confirmed = await Dialog.confirm({
+      title: t("Dialogs.DeleteFolderTitle", "Delete folder"),
+      content: tf("Dialogs.DeleteFolderContent", {
+        name: escapeHtml(untitledName(folder.name)),
+      }, ({ name }) => `<p>Delete folder <b>${name}</b>? Tracks will be moved outside the folder.</p>`),
+    });
+    if (!confirmed) return;
+
+    const nextTracks = getAmbienceTracks().map((track) => track.folderId === folderId ? { ...track, folderId: "" } : track);
+    const nextFolders = folders.filter((entry) => entry.id !== folderId);
+    await setStorageData({
+      ambienceTracks: nextTracks,
+      ambienceTrackFolders: nextFolders,
+    });
+    await this.#refreshCards([MANAGER_CARD_IDS.ambienceTracks]);
+  }
+
+  async #moveAmbienceTrackToFolder(trackId, folderId = "") {
+    if (!trackId) return;
+    const tracks = getAmbienceTracks();
+    const folders = getAmbienceTrackFolders();
+    const normalizedFolderId = normalizeTrackFolderId(folderId, folders);
+    const index = tracks.findIndex((entry) => entry.id === trackId);
+    if (index === -1) return;
+    if (String(tracks[index].folderId ?? "") === normalizedFolderId) return;
+
+    tracks[index] = {
+      ...tracks[index],
+      folderId: normalizedFolderId,
+    };
+    await setAmbienceTracks(tracks);
+    await this.#refreshCards([MANAGER_CARD_IDS.ambienceTracks]);
   }
 
   async #deleteAmbienceTrack(trackId) {
@@ -6582,9 +7348,10 @@ class TsDjMusicApp extends Application {
 
   async #createOrEditAmbiencePlaylist(playlistId = null) {
     const tracks = getAmbienceTracks();
+    const folders = getAmbienceTrackFolders();
     const playlists = getAmbiencePlaylists();
     const current = playlistId ? playlists.find((entry) => entry.id === playlistId) : null;
-    const payload = await promptPlaylistData(current, tracks);
+    const payload = await promptPlaylistData(current, tracks, folders);
     if (!payload) return;
 
     if (current) {
@@ -6726,6 +7493,29 @@ async function promptFileData(current = null) {
     name: String(result.name ?? "").trim() || getPathBaseName(path),
     path,
   };
+}
+
+async function promptPlaylistFolderName(currentName = "") {
+  const content = `
+    <form class="standard-form ts-dj-dialog-form">
+      <div class="form-group">
+        <label>${escapeHtml(t("Dialogs.FolderNameLabel", "Folder name"))}</label>
+        <div class="form-fields">
+          <input type="text" name="name" value="${escapeHtml(currentName)}" placeholder="${escapeHtml(t("Dialogs.FolderNamePlaceholder", "For example: Combat"))}">
+        </div>
+      </div>
+    </form>
+  `;
+
+  const result = await promptDialog(t("Dialogs.FolderTitle", "Folder"), content);
+  if (!result) return null;
+
+  const name = String(result.name ?? "").trim();
+  if (!name) {
+    notify("warn", "NeedFolderName", {}, "You must specify a folder name.");
+    return null;
+  }
+  return name;
 }
 
 async function promptTrackData(current, files) {
@@ -6983,35 +7773,65 @@ function decodePathForDisplay(path) {
     .join("");
 }
 
-async function promptPlaylistData(current, tracks) {
-  const checked = new Set(normalizeArray(current?.trackIds));
-  const dialogTracks = getPlaylistTracksForEditor(tracks, normalizeArray(current?.trackIds));
+async function promptPlaylistData(current, tracks, folders = []) {
+  const currentPlaylist = current ? normalizeMusicPlaylistEntry(current) : null;
+  const currentSelectedTrackIds = currentPlaylist ? getMusicPlaylistOrderedTrackIds(currentPlaylist) : [];
+  const hasFolders = Boolean(currentPlaylist?.folders?.length);
+  const checked = new Set(currentSelectedTrackIds);
+  const dialogGroups = getPlaylistTrackGroupsForEditor(tracks, folders, currentSelectedTrackIds);
 
-  const trackCheckboxes = dialogTracks.length
-    ? dialogTracks
-        .map((track) => {
-          const isChecked = checked.has(track.id) ? "checked" : "";
+  const trackCheckboxes = dialogGroups.length
+    ? dialogGroups
+        .map((group) => {
+          const checkedCount = group.tracks.filter((track) => checked.has(track.id)).length;
+          const allChecked = checkedCount > 0 && checkedCount === group.tracks.length;
+          const folderLabel = escapeHtml(group.name);
+          const folderKey = escapeHtml(group.key);
+          const rowsHtml = group.tracks.map((track) => {
+            const isChecked = checked.has(track.id) ? "checked" : "";
+            return `
+              <div class="ts-dj-playlist-track-row ${isChecked ? "is-checked" : ""}" data-track-row data-folder-key="${folderKey}" data-track-id="${escapeHtml(track.id)}" draggable="true">
+                <span class="ts-dj-playlist-track-handle" title="${escapeHtml(t("Common.DragToReorder", "Drag to change order"))}">
+                  <i class="fas fa-grip-vertical"></i>
+                </span>
+                <input type="checkbox" name="trackIds" value="${escapeHtml(track.id)}" ${isChecked}>
+                <span class="ts-dj-playlist-track-name">${escapeHtml(track.name)}</span>
+              </div>
+            `;
+          }).join("");
           return `
-            <div class="ts-dj-playlist-track-row ${isChecked ? "is-checked" : ""}" data-track-row data-track-id="${escapeHtml(track.id)}" draggable="true">
-              <span class="ts-dj-playlist-track-handle" title="${escapeHtml(t("Common.DragToReorder", "Drag to change order"))}">
-                <i class="fas fa-grip-vertical"></i>
-              </span>
-              <input type="checkbox" name="trackIds" value="${escapeHtml(track.id)}" ${isChecked}>
-              <span class="ts-dj-playlist-track-name">${escapeHtml(track.name)}</span>
+            <div class="ts-dj-playlist-track-group" data-track-group data-folder-key="${folderKey}">
+              <label class="ts-dj-playlist-track-group-label">
+                <input type="checkbox" data-folder-toggle ${allChecked ? "checked" : ""}>
+                <strong>${folderLabel}</strong>
+                <span>${group.tracks.length}</span>
+              </label>
             </div>
+            ${rowsHtml}
           `;
         })
         .join("")
     : `<p class='notes'>${escapeHtml(t("Dialogs.PlaylistTrackPickerEmpty", "Create tracks first."))}</p>`;
 
-  const content = `
-    <form class="standard-form ts-dj-dialog-form">
+  const nameField = `
       <div class="form-group">
         <label>${escapeHtml(t("Dialogs.PlaylistNameLabel", "Playlist name"))}</label>
         <div class="form-fields">
           <input type="text" name="name" value="${escapeHtml(current?.name ?? "")}" placeholder="${escapeHtml(t("Dialogs.PlaylistNamePlaceholder", "For example: Mix 1"))}">
         </div>
       </div>
+  `;
+
+  const content = hasFolders
+    ? `
+    <form class="standard-form ts-dj-dialog-form">
+      ${nameField}
+      <p class="notes">${escapeHtml(t("Dialogs.PlaylistFolderStructureNote", "This playlist already uses folders. Track structure is managed directly in the playlist card."))}</p>
+    </form>
+  `
+    : `
+    <form class="standard-form ts-dj-dialog-form">
+      ${nameField}
       <div class="form-group stacked">
         <label>${escapeHtml(t("Dialogs.PlaylistTracksLabel", "Playlist tracks"))}</label>
         <input type="hidden" name="trackOrder" value="">
@@ -7025,6 +7845,7 @@ async function promptPlaylistData(current, tracks) {
 
   const result = await promptDialog(t("Dialogs.PlaylistTitle", "Playlist"), content, {
     render: (html) => {
+      if (hasFolders) return;
       const form = html[0]?.querySelector("form");
       initPlaylistTrackPicker(form);
     },
@@ -7035,6 +7856,13 @@ async function promptPlaylistData(current, tracks) {
   if (!name) {
     notify("warn", "NeedPlaylistName", {}, "You must specify a playlist name.");
     return null;
+  }
+
+  if (hasFolders && currentPlaylist) {
+    return {
+      ...currentPlaylist,
+      name,
+    };
   }
 
   const selected = result.trackIds;
@@ -7051,6 +7879,7 @@ async function promptPlaylistData(current, tracks) {
     loop: Boolean(current?.loop),
     shuffle: Boolean(current?.shuffle),
     trackIds,
+    folders: currentPlaylist?.folders ?? [],
   };
 }
 
@@ -7472,6 +8301,27 @@ function escapeHtml(value) {
 
 function clampNumber(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function autoScrollContainerOnDrag(event, container, {
+  threshold = 44,
+  maxStep = 24,
+} = {}) {
+  if (!(container instanceof HTMLElement)) return;
+  const rect = container.getBoundingClientRect();
+  if (!rect.height) return;
+
+  const topDistance = event.clientY - rect.top;
+  const bottomDistance = rect.bottom - event.clientY;
+  if (topDistance >= 0 && topDistance < threshold) {
+    const factor = 1 - (topDistance / threshold);
+    container.scrollTop -= Math.ceil(maxStep * factor);
+    return;
+  }
+  if (bottomDistance >= 0 && bottomDistance < threshold) {
+    const factor = 1 - (bottomDistance / threshold);
+    container.scrollTop += Math.ceil(maxStep * factor);
+  }
 }
 
 function startClipEndMonitor(sound, clipStart, clipEnd, token) {
