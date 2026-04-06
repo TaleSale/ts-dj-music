@@ -1,4 +1,4 @@
-import { exportModuleSettings, importModuleSettings, transferMusicPlaylist } from "./settings-io.js";
+﻿import { exportModuleSettings, importModuleSettings, transferMusicPlaylist } from "./settings-io.js";
 const MODULE_ID = "ts-dj-music";
 
 const SETTING_KEYS = {
@@ -14,6 +14,15 @@ const SETTING_KEYS = {
   collapseGlobalVolumeByDefault: "collapseGlobalVolumeByDefault",
   collapseTsDjPlaylistsByDefault: "collapseTsDjPlaylistsByDefault",
   collapseFoundryPlaylistsByDefault: "collapseFoundryPlaylistsByDefault",
+  collapseManagerNormalizationByDefault: "collapseManagerNormalizationByDefault",
+  collapseManagerFilesByDefault: "collapseManagerFilesByDefault",
+  collapseManagerMusicByDefault: "collapseManagerMusicByDefault",
+  collapseManagerAmbienceByDefault: "collapseManagerAmbienceByDefault",
+  collapseManagerNowPlayingByDefault: "collapseManagerNowPlayingByDefault",
+  collapseManagerMusicPlaylistsByDefault: "collapseManagerMusicPlaylistsByDefault",
+  collapseManagerMusicTracksByDefault: "collapseManagerMusicTracksByDefault",
+  collapseManagerAmbiencePlaylistsByDefault: "collapseManagerAmbiencePlaylistsByDefault",
+  collapseManagerAmbienceTracksByDefault: "collapseManagerAmbienceTracksByDefault",
 };
 const MANAGER_CARD_IDS = Object.freeze({
   files: "files",
@@ -38,6 +47,7 @@ const SOCKET_ACTIONS = Object.freeze({
   playTrack: "play-track",
   playPlaylist: "play-playlist",
   playRelativeTrack: "play-relative-track",
+  seekPlayback: "seek-playback",
   stopPlayback: "stop-playback",
   pausePlayback: "pause-playback",
   resumePlayback: "resume-playback",
@@ -56,6 +66,7 @@ const SOCKET_CONTROL_ACTIONS = new Set([
   SOCKET_ACTIONS.playTrack,
   SOCKET_ACTIONS.playPlaylist,
   SOCKET_ACTIONS.playRelativeTrack,
+  SOCKET_ACTIONS.seekPlayback,
   SOCKET_ACTIONS.stopPlayback,
   SOCKET_ACTIONS.pausePlayback,
   SOCKET_ACTIONS.resumePlayback,
@@ -79,8 +90,25 @@ const NORMALIZATION_BIND_MAX_WAIT_MS = 1500;
 const PRELOAD_NORMALIZATION_MAX_WAIT_MS = 8000;
 const PRELOAD_NORMALIZATION_RATE = 2;
 const NORMALIZATION_SCAN_WINDOW_SEC = 0.5;
-const NORMALIZATION_SCAN_WINDOW_COUNT = 3;
-const NORMALIZATION_SCAN_SAMPLE_STEP = 1;
+const DEFAULT_NORMALIZATION_SCAN_PROFILE = "normal";
+const NORMALIZATION_SCAN_PROFILES = Object.freeze({
+  shallow: Object.freeze({
+    id: "shallow",
+    windowCount: 2,
+    sampleStep: 1,
+  }),
+  normal: Object.freeze({
+    id: "normal",
+    windowCount: 3,
+    sampleStep: 1,
+  }),
+  deep: Object.freeze({
+    id: "deep",
+    windowCount: 5,
+    sampleStep: 1,
+  }),
+});
+const NORMALIZATION_SCAN_PROFILE_ORDER = Object.freeze(["shallow", "normal", "deep"]);
 const MIN_NORMALIZATION_RMS = 0.00001;
 const MIN_NORMALIZATION_ACTIVE_SAMPLE = 0.0001;
 const NORMALIZATION_TOP_BLOCK_PORTION = 0.2;
@@ -101,7 +129,91 @@ const DEFAULT_CLIENT_SETTINGS = Object.freeze({
   collapseGlobalVolumeByDefault: false,
   collapseTsDjPlaylistsByDefault: false,
   collapseFoundryPlaylistsByDefault: false,
+  collapseManagerNormalizationByDefault: false,
+  collapseManagerFilesByDefault: false,
+  collapseManagerMusicByDefault: false,
+  collapseManagerAmbienceByDefault: false,
+  collapseManagerNowPlayingByDefault: false,
+  collapseManagerMusicPlaylistsByDefault: false,
+  collapseManagerMusicTracksByDefault: false,
+  collapseManagerAmbiencePlaylistsByDefault: false,
+  collapseManagerAmbienceTracksByDefault: false,
 });
+const QUICK_PANEL_COLLAPSE_SETTINGS = Object.freeze([
+  {
+    key: SETTING_KEYS.collapseGlobalVolumeByDefault,
+    nameKey: i18nKey("Settings.CollapseGlobalVolumeName"),
+    hintKey: i18nKey("Settings.CollapseGlobalVolumeHint"),
+  },
+  {
+    key: SETTING_KEYS.collapseTsDjPlaylistsByDefault,
+    nameKey: i18nKey("Settings.CollapsePlaylistsName"),
+    hintKey: i18nKey("Settings.CollapsePlaylistsHint"),
+  },
+  {
+    key: SETTING_KEYS.collapseFoundryPlaylistsByDefault,
+    nameKey: i18nKey("Settings.CollapseFoundryName"),
+    hintKey: i18nKey("Settings.CollapseFoundryHint"),
+  },
+]);
+const MANAGER_SECTION_COLLAPSE_SETTINGS = Object.freeze([
+  {
+    key: SETTING_KEYS.collapseManagerNormalizationByDefault,
+    sectionKey: "normalization",
+    nameKey: i18nKey("Settings.CollapseWindowNormalizationName"),
+    hintKey: i18nKey("Settings.CollapseWindowNormalizationHint"),
+  },
+  {
+    key: SETTING_KEYS.collapseManagerFilesByDefault,
+    sectionKey: "files",
+    nameKey: i18nKey("Settings.CollapseWindowFilesName"),
+    hintKey: i18nKey("Settings.CollapseWindowFilesHint"),
+  },
+  {
+    key: SETTING_KEYS.collapseManagerMusicByDefault,
+    sectionKey: "music",
+    nameKey: i18nKey("Settings.CollapseWindowMusicName"),
+    hintKey: i18nKey("Settings.CollapseWindowMusicHint"),
+  },
+  {
+    key: SETTING_KEYS.collapseManagerAmbienceByDefault,
+    sectionKey: "ambience",
+    nameKey: i18nKey("Settings.CollapseWindowAmbienceName"),
+    hintKey: i18nKey("Settings.CollapseWindowAmbienceHint"),
+  },
+]);
+const MANAGER_CARD_COLLAPSE_SETTINGS = Object.freeze([
+  {
+    key: SETTING_KEYS.collapseManagerNowPlayingByDefault,
+    cardKey: "nowPlaying",
+    nameKey: i18nKey("Settings.CollapseWindowNowPlayingName"),
+    hintKey: i18nKey("Settings.CollapseWindowNowPlayingHint"),
+  },
+  {
+    key: SETTING_KEYS.collapseManagerMusicPlaylistsByDefault,
+    cardKey: "musicPlaylists",
+    nameKey: i18nKey("Settings.CollapseWindowMusicPlaylistsName"),
+    hintKey: i18nKey("Settings.CollapseWindowMusicPlaylistsHint"),
+  },
+  {
+    key: SETTING_KEYS.collapseManagerMusicTracksByDefault,
+    cardKey: "musicTracks",
+    nameKey: i18nKey("Settings.CollapseWindowMusicTracksName"),
+    hintKey: i18nKey("Settings.CollapseWindowMusicTracksHint"),
+  },
+  {
+    key: SETTING_KEYS.collapseManagerAmbiencePlaylistsByDefault,
+    cardKey: "ambiencePlaylists",
+    nameKey: i18nKey("Settings.CollapseWindowAmbiencePlaylistsName"),
+    hintKey: i18nKey("Settings.CollapseWindowAmbiencePlaylistsHint"),
+  },
+  {
+    key: SETTING_KEYS.collapseManagerAmbienceTracksByDefault,
+    cardKey: "ambienceTracks",
+    nameKey: i18nKey("Settings.CollapseWindowAmbienceTracksName"),
+    hintKey: i18nKey("Settings.CollapseWindowAmbienceTracksHint"),
+  },
+]);
 
 let appInstance = null;
 const managerSectionState = {
@@ -110,7 +222,11 @@ const managerSectionState = {
   music: true,
   ambience: true,
 };
+const managerUiState = {
+  defaultsLoaded: false,
+};
 const managerCardExpandState = {
+  nowPlaying: true,
   musicPlaylists: true,
   musicTracks: true,
   ambiencePlaylists: true,
@@ -169,9 +285,11 @@ const storageState = {
   tracks: [],
   playlists: [],
   trackFolders: [],
+  trackRootName: "",
   ambienceTracks: [],
   ambiencePlaylists: [],
   ambienceTrackFolders: [],
+  ambienceTrackRootName: "",
   ambienceAllowConcurrent: false,
   normalizationCache: {},
   normalizationReferences: {
@@ -188,8 +306,8 @@ const pendingPlaybackSyncRequests = new Map();
 const segmentLoopIntervals = new WeakMap();
 const normalizationAnalysisCache = new Map();
 const normalizationScanState = {
-  music: false,
-  ambience: false,
+  music: null,
+  ambience: null,
 };
 const sessionNormalizationState = {
   music: {
@@ -269,6 +387,67 @@ function formatSidebarTrackMeta(file, clip, loopEnabled) {
   );
 }
 
+function getBooleanSettingsFormData(settingDefinitions) {
+  return settingDefinitions.map(({ key, nameKey, hintKey }) => ({
+    key,
+    nameKey,
+    hintKey,
+    value: Boolean(game.settings.get(MODULE_ID, key)),
+  }));
+}
+
+function buildWindowSettingsGroups() {
+  const sectionSettings = new Map(
+    getBooleanSettingsFormData(MANAGER_SECTION_COLLAPSE_SETTINGS).map((setting) => [setting.key, setting])
+  );
+  const cardSettings = new Map(
+    getBooleanSettingsFormData(MANAGER_CARD_COLLAPSE_SETTINGS).map((setting) => [setting.key, setting])
+  );
+
+  return [
+    {
+      parent: cardSettings.get(SETTING_KEYS.collapseManagerNowPlayingByDefault),
+      children: [],
+      hasChildren: false,
+    },
+    {
+      parent: sectionSettings.get(SETTING_KEYS.collapseManagerNormalizationByDefault),
+      children: [],
+      hasChildren: false,
+    },
+    {
+      parent: sectionSettings.get(SETTING_KEYS.collapseManagerFilesByDefault),
+      children: [],
+      hasChildren: false,
+    },
+    {
+      parent: sectionSettings.get(SETTING_KEYS.collapseManagerMusicByDefault),
+      children: [
+        cardSettings.get(SETTING_KEYS.collapseManagerMusicPlaylistsByDefault),
+        cardSettings.get(SETTING_KEYS.collapseManagerMusicTracksByDefault),
+      ].filter(Boolean),
+      hasChildren: true,
+    },
+    {
+      parent: sectionSettings.get(SETTING_KEYS.collapseManagerAmbienceByDefault),
+      children: [
+        cardSettings.get(SETTING_KEYS.collapseManagerAmbiencePlaylistsByDefault),
+        cardSettings.get(SETTING_KEYS.collapseManagerAmbienceTracksByDefault),
+      ].filter(Boolean),
+      hasChildren: true,
+    },
+  ].filter((group) => group.parent);
+}
+
+async function saveBooleanSettingsFormData(formData, settingDefinitions) {
+  const values = foundry.utils.expandObject(formData)?.settings ?? {};
+  const getBoolean = (key) => Boolean(values[key]);
+
+  for (const { key } of settingDefinitions) {
+    await game.settings.set(MODULE_ID, key, getBoolean(key));
+  }
+}
+
 class QuickPanelSettingsForm extends FormApplication {
   static get defaultOptions() {
     return foundry.utils.mergeObject(super.defaultOptions, {
@@ -285,37 +464,42 @@ class QuickPanelSettingsForm extends FormApplication {
 
   getData(options = {}) {
     const data = super.getData(options);
-    data.settings = [
-      {
-        key: SETTING_KEYS.collapseGlobalVolumeByDefault,
-        nameKey: i18nKey("Settings.CollapseGlobalVolumeName"),
-        hintKey: i18nKey("Settings.CollapseGlobalVolumeHint"),
-        value: Boolean(game.settings.get(MODULE_ID, SETTING_KEYS.collapseGlobalVolumeByDefault)),
-      },
-      {
-        key: SETTING_KEYS.collapseTsDjPlaylistsByDefault,
-        nameKey: i18nKey("Settings.CollapsePlaylistsName"),
-        hintKey: i18nKey("Settings.CollapsePlaylistsHint"),
-        value: Boolean(game.settings.get(MODULE_ID, SETTING_KEYS.collapseTsDjPlaylistsByDefault)),
-      },
-      {
-        key: SETTING_KEYS.collapseFoundryPlaylistsByDefault,
-        nameKey: i18nKey("Settings.CollapseFoundryName"),
-        hintKey: i18nKey("Settings.CollapseFoundryHint"),
-        value: Boolean(game.settings.get(MODULE_ID, SETTING_KEYS.collapseFoundryPlaylistsByDefault)),
-      },
-    ];
+    data.settings = getBooleanSettingsFormData(QUICK_PANEL_COLLAPSE_SETTINGS);
     data.saveLabel = t("Common.Save", "Save");
     return data;
   }
 
   async _updateObject(_event, formData) {
-    const values = foundry.utils.expandObject(formData)?.settings ?? {};
-    const getBoolean = (key) => Boolean(values[key]);
+    await saveBooleanSettingsFormData(formData, QUICK_PANEL_COLLAPSE_SETTINGS);
+  }
+}
 
-    await game.settings.set(MODULE_ID, SETTING_KEYS.collapseGlobalVolumeByDefault, getBoolean(SETTING_KEYS.collapseGlobalVolumeByDefault));
-    await game.settings.set(MODULE_ID, SETTING_KEYS.collapseTsDjPlaylistsByDefault, getBoolean(SETTING_KEYS.collapseTsDjPlaylistsByDefault));
-    await game.settings.set(MODULE_ID, SETTING_KEYS.collapseFoundryPlaylistsByDefault, getBoolean(SETTING_KEYS.collapseFoundryPlaylistsByDefault));
+class WindowSettingsForm extends FormApplication {
+  static get defaultOptions() {
+    return foundry.utils.mergeObject(super.defaultOptions, {
+      id: `${MODULE_ID}-window-settings`,
+      classes: ["form", "ts-dj-quick-panel-settings"],
+      template: `modules/${MODULE_ID}/templates/quick-panel-settings.hbs`,
+      width: 520,
+    });
+  }
+
+  get title() {
+    return t("Settings.WindowMenuTitle", "Window Settings");
+  }
+
+  getData(options = {}) {
+    const data = super.getData(options);
+    data.groupedSettings = buildWindowSettingsGroups();
+    data.saveLabel = t("Common.Save", "Save");
+    return data;
+  }
+
+  async _updateObject(_event, formData) {
+    await saveBooleanSettingsFormData(formData, [
+      ...MANAGER_SECTION_COLLAPSE_SETTINGS,
+      ...MANAGER_CARD_COLLAPSE_SETTINGS,
+    ]);
   }
 }
 
@@ -379,9 +563,11 @@ Hooks.on("deletePlaylist", (playlist) => {
   storageState.tracks = [];
   storageState.playlists = [];
   storageState.trackFolders = [];
+  storageState.trackRootName = "";
   storageState.ambienceTracks = [];
   storageState.ambiencePlaylists = [];
   storageState.ambienceTrackFolders = [];
+  storageState.ambienceTrackRootName = "";
   storageState.ambienceAllowConcurrent = false;
   refreshPlaylistDirectoryUi();
 });
@@ -437,6 +623,9 @@ async function handleModuleSocketEvent(message) {
       break;
     case SOCKET_ACTIONS.playRelativeTrack:
       await playRelativeTrackInCurrentPlaylist(Number(payload.direction) < 0 ? -1 : 1, { sync: false });
+      break;
+    case SOCKET_ACTIONS.seekPlayback:
+      await seekCurrentPlayback(payload.timeSec, { sync: false });
       break;
     case SOCKET_ACTIONS.stopPlayback:
       await stopPlayback({ sync: false });
@@ -553,9 +742,11 @@ function defaultStorageData() {
     tracks: [],
     playlists: [],
     trackFolders: [],
+    trackRootName: "",
     ambienceTracks: [],
     ambiencePlaylists: [],
     ambienceTrackFolders: [],
+    ambienceTrackRootName: "",
     ambienceAllowConcurrent: false,
     normalizationCache: {},
     normalizationReferences: {
@@ -627,15 +818,20 @@ function hydrateTrackNormalizationMetadata(tracks = [], files = [], normalizatio
   for (const track of normalizedTracks) {
     const filePath = fileMap.get(track?.fileId) ?? "";
     if (!filePath) continue;
+    const profileId = getTrackNormalizationScanProfileId(track);
 
     const storedLoudnessDb = getStoredTrackNormalizationLoudnessDb(track, filePath);
-    if (Number.isFinite(storedLoudnessDb)) continue;
+    if (Number.isFinite(storedLoudnessDb)) {
+      track.normalizationScanProfile = profileId;
+      continue;
+    }
 
-    const cacheKey = getTrackNormalizationCacheKey(track, filePath);
+    const cacheKey = getTrackNormalizationCacheKeyForProfile(track, filePath, profileId);
     const cachedValue = Number(cacheStore[cacheKey]);
     if (!Number.isFinite(cachedValue)) continue;
 
     track.normalizationAnalysisVersion = NORMALIZATION_ANALYSIS_VERSION;
+    track.normalizationScanProfile = profileId;
     track.normalizationCacheKey = cacheKey;
     track.normalizationLoudnessDb = cachedValue;
   }
@@ -660,12 +856,14 @@ function normalizeStorageData(raw) {
     })),
     playlists: normalizeArray(source.playlists).map((entry) => normalizeMusicPlaylistEntry(entry)),
     trackFolders,
+    trackRootName: normalizeTrackRootName(source.trackRootName),
     ambienceTracks: ambienceTracks.map((track) => ({
       ...track,
       folderId: normalizeTrackFolderId(track.folderId, ambienceTrackFolders),
     })),
     ambiencePlaylists: normalizeArray(source.ambiencePlaylists),
     ambienceTrackFolders,
+    ambienceTrackRootName: normalizeTrackRootName(source.ambienceTrackRootName),
     ambienceAllowConcurrent: Boolean(source.ambienceAllowConcurrent),
     normalizationCache,
     normalizationReferences,
@@ -678,9 +876,11 @@ function cloneStorageData(data = storageState) {
     tracks: normalizeArray(data.tracks).map((entry) => ({ ...entry })),
     playlists: normalizeArray(data.playlists).map((entry) => cloneMusicPlaylistEntry(entry)),
     trackFolders: normalizeArray(data.trackFolders).map((entry) => ({ ...entry })),
+    trackRootName: normalizeTrackRootName(data.trackRootName),
     ambienceTracks: normalizeArray(data.ambienceTracks).map((entry) => ({ ...entry })),
     ambiencePlaylists: normalizeArray(data.ambiencePlaylists).map((entry) => ({ ...entry, trackIds: normalizeArray(entry.trackIds) })),
     ambienceTrackFolders: normalizeArray(data.ambienceTrackFolders).map((entry) => ({ ...entry })),
+    ambienceTrackRootName: normalizeTrackRootName(data.ambienceTrackRootName),
     ambienceAllowConcurrent: Boolean(data.ambienceAllowConcurrent),
     normalizationCache: cloneNormalizationCacheStore(),
     normalizationReferences: cloneNormalizationReferenceStore(data.normalizationReferences),
@@ -693,9 +893,11 @@ function applyStorageData(next) {
   storageState.tracks = normalized.tracks;
   storageState.playlists = normalized.playlists;
   storageState.trackFolders = normalized.trackFolders;
+  storageState.trackRootName = normalized.trackRootName;
   storageState.ambienceTracks = normalized.ambienceTracks;
   storageState.ambiencePlaylists = normalized.ambiencePlaylists;
   storageState.ambienceTrackFolders = normalized.ambienceTrackFolders;
+  storageState.ambienceTrackRootName = normalized.ambienceTrackRootName;
   storageState.ambienceAllowConcurrent = normalized.ambienceAllowConcurrent;
   storageState.normalizationCache = applyNormalizationCacheStore(normalized.normalizationCache);
   storageState.normalizationReferences = cloneNormalizationReferenceStore(normalized.normalizationReferences);
@@ -981,14 +1183,59 @@ function formatManualNormalizationInputValue(channel) {
   return value || "";
 }
 
-function getNormalizationScanButtonLabel(channel) {
+function getNormalizationScanProfile(profileId = null) {
+  const normalized = String(profileId ?? "").trim().toLowerCase();
+  return NORMALIZATION_SCAN_PROFILES[normalized] ?? NORMALIZATION_SCAN_PROFILES[DEFAULT_NORMALIZATION_SCAN_PROFILE];
+}
+
+function getTrackNormalizationScanProfileId(track = null) {
+  return getNormalizationScanProfile(track?.normalizationScanProfile).id;
+}
+
+function getNormalizationScanProfileLabel(profileId) {
+  const profile = getNormalizationScanProfile(profileId);
+  switch (profile.id) {
+    case "shallow":
+      return t("App.NormalizationScanShallow", localizedFallback("Поверхностный скан", "Shallow scan"));
+    case "deep":
+      return t("App.NormalizationScanDeep", localizedFallback("Глубокий скан", "Deep scan"));
+    default:
+      return t("App.NormalizationScanNormal", localizedFallback("Нормальный скан", "Normal scan"));
+  }
+}
+
+function getNormalizationScanButtonLabel(channel, profileId = DEFAULT_NORMALIZATION_SCAN_PROFILE) {
+  const channelKey = getNormalizationChannelKey(channel);
+  const profile = getNormalizationScanProfile(profileId);
+  if (normalizationScanState[channelKey] === profile.id) {
+    return t("Common.Scanning", localizedFallback("Сканирование...", "Scanning..."));
+  }
+  return getNormalizationScanProfileLabel(profile.id);
+}
+
+function isNormalizationScanRunning(channel) {
+  const channelKey = getNormalizationChannelKey(channel);
+  return Boolean(normalizationScanState[channelKey]);
+}
+
+function getNormalizationScanButtons(channel) {
+  const channelKey = getNormalizationChannelKey(channel);
+  const disabled = isNormalizationScanRunning(channelKey);
+  return NORMALIZATION_SCAN_PROFILE_ORDER.map((profileId) => ({
+    mode: profileId,
+    label: getNormalizationScanButtonLabel(channelKey, profileId),
+    disabled,
+  }));
+}
+
+function getNormalizationScanButtonLabelLegacy(channel) {
   const channelKey = getNormalizationChannelKey(channel);
   if (normalizationScanState[channelKey]) {
     return t("Common.Scanning", localizedFallback("Сканирование...", "Scanning..."));
   }
   return channelKey === "ambience"
-    ? t("App.ScanAmbienceNormalization", localizedFallback("Сканировать треки эмбиенса", "Scan ambience tracks"))
-    : t("App.ScanMusicNormalization", localizedFallback("Сканировать треки музыки", "Scan music tracks"));
+    ? t("App.ScanAmbienceNormalization", localizedFallback("Скан треков эмбиенса", "Scan ambience tracks"))
+    : t("App.ScanMusicNormalization", localizedFallback("Скан треков музыки", "Scan music tracks"));
 }
 
 function parseMilliHertzInput(value) {
@@ -1264,6 +1511,14 @@ function registerSettings() {
     type: QuickPanelSettingsForm,
     restricted: false,
   });
+  game.settings.registerMenu(MODULE_ID, "windowSettings", {
+    name: i18nKey("Settings.WindowMenuName"),
+    label: i18nKey("Settings.WindowMenuLabel"),
+    hint: i18nKey("Settings.WindowMenuHint"),
+    icon: "fa-solid fa-window-maximize",
+    type: WindowSettingsForm,
+    restricted: false,
+  });
 
   game.settings.register(MODULE_ID, SETTING_KEYS.files, {
     name: t("Settings.Files", "DJ Files"),
@@ -1367,6 +1622,27 @@ function registerSettings() {
     i18nKey("Settings.CollapseFoundryName"),
     i18nKey("Settings.CollapseFoundryHint")
   );
+
+  const registerManagerDefaultCollapseSetting = (key, name, hint) => {
+    game.settings.register(MODULE_ID, key, {
+      name,
+      hint,
+      scope: "client",
+      config: false,
+      type: Boolean,
+      default: false,
+      onChange: () => {
+        managerUiState.defaultsLoaded = false;
+        if (appInstance?.rendered) {
+          appInstance.render(false);
+        }
+      },
+    });
+  };
+
+  for (const { key, nameKey, hintKey } of [...MANAGER_SECTION_COLLAPSE_SETTINGS, ...MANAGER_CARD_COLLAPSE_SETTINGS]) {
+    registerManagerDefaultCollapseSetting(key, nameKey, hintKey);
+  }
 }
 
 function initializeSidebarUiStateFromSettings() {
@@ -1376,6 +1652,19 @@ function initializeSidebarUiStateFromSettings() {
   sidebarUiState.quickPanelCollapsed = Boolean(game.settings.get(MODULE_ID, SETTING_KEYS.collapseTsDjPlaylistsByDefault));
   sidebarUiState.nativePlaylistsCollapsed = Boolean(game.settings.get(MODULE_ID, SETTING_KEYS.collapseFoundryPlaylistsByDefault));
   sidebarUiState.defaultsLoaded = true;
+}
+
+function initializeManagerSectionStateFromSettings() {
+  if (managerUiState.defaultsLoaded) return;
+
+  for (const { key, sectionKey } of MANAGER_SECTION_COLLAPSE_SETTINGS) {
+    managerSectionState[sectionKey] = !Boolean(game.settings.get(MODULE_ID, key));
+  }
+  for (const { key, cardKey } of MANAGER_CARD_COLLAPSE_SETTINGS) {
+    managerCardExpandState[cardKey] = !Boolean(game.settings.get(MODULE_ID, key));
+  }
+
+  managerUiState.defaultsLoaded = true;
 }
 
 function getRoot(html) {
@@ -1446,10 +1735,18 @@ function syncSidebarRangeControl(root, controlKey, value, format, { iconFromValu
 }
 
 function syncSidebarMonitorControl(root, monitorKey, value) {
-  const label = root.querySelector(`[data-live-monitor='${monitorKey}']`);
-  if (label) {
-    label.textContent = String(value ?? "");
+  const monitor = root.querySelector(`[data-live-monitor='${monitorKey}']`);
+  if (!monitor) return;
+
+  if (value && typeof value === "object") {
+    const source = monitor.querySelector("[data-live-monitor-part='source']");
+    const target = monitor.querySelector("[data-live-monitor-part='target']");
+    if (source) source.textContent = String(value.source ?? "");
+    if (target) target.textContent = String(value.target ?? "");
+    return;
   }
+
+  monitor.textContent = String(value ?? "");
 }
 
 function syncSidebarLiveControls(root = null) {
@@ -1457,8 +1754,8 @@ function syncSidebarLiveControls(root = null) {
   if (!(sidebarRoot instanceof HTMLElement)) return false;
 
   syncSidebarRangeControl(sidebarRoot, "rate", getLiveRate(), formatRate);
-  syncSidebarMonitorControl(sidebarRoot, "music", getNormalizationMonitorLabel("music"));
-  syncSidebarMonitorControl(sidebarRoot, "ambience", getNormalizationMonitorLabel("ambience"));
+  syncSidebarMonitorControl(sidebarRoot, "music", getNormalizationMonitorParts("music"));
+  syncSidebarMonitorControl(sidebarRoot, "ambience", getNormalizationMonitorParts("ambience"));
   syncSidebarRangeControl(sidebarRoot, "music-volume", getLiveMusicVolume(), formatVolumePercent, {
     iconFromValue: getVolumeIconClass,
   });
@@ -1594,10 +1891,31 @@ function injectPlaylistDirectoryRateControl(root) {
 
     const value = document.createElement("span");
     value.classList.add("monitor-value");
-    value.textContent = valueText;
     if (monitorKey) {
       value.dataset.liveMonitor = monitorKey;
     }
+
+    const source = document.createElement("span");
+    source.classList.add("monitor-value-source");
+    source.dataset.liveMonitorPart = "source";
+
+    const arrow = document.createElement("span");
+    arrow.classList.add("monitor-value-arrow");
+    arrow.textContent = "->";
+
+    const target = document.createElement("span");
+    target.classList.add("monitor-value-target");
+    target.dataset.liveMonitorPart = "target";
+
+    if (valueText && typeof valueText === "object") {
+      source.textContent = String(valueText.source ?? "");
+      target.textContent = String(valueText.target ?? "");
+    } else {
+      source.textContent = String(valueText ?? "");
+      target.textContent = "";
+    }
+
+    value.append(source, arrow, target);
 
     row.append(label, value);
     container.append(row);
@@ -1623,14 +1941,14 @@ function injectPlaylistDirectoryRateControl(root) {
 
   addMonitorRow({
     labelText: t("App.MusicNormalization", localizedFallback("РќРѕСЂРј. РјСѓР·С‹РєРё:", "Norm. music:")),
-    valueText: getNormalizationMonitorLabel("music"),
+    valueText: getNormalizationMonitorParts("music"),
     container: speedBody,
     monitorKey: "music",
   });
 
   addMonitorRow({
     labelText: t("App.AmbienceNormalization", localizedFallback("РќРѕСЂРј. СЌРјР±РёРµРЅСЃР°:", "Norm. ambience:")),
-    valueText: getNormalizationMonitorLabel("ambience"),
+    valueText: getNormalizationMonitorParts("ambience"),
     container: speedBody,
     monitorKey: "ambience",
   });
@@ -2111,14 +2429,14 @@ function getCurrentPlaybackLabelForSidebar(tracks, playlists) {
   if (playbackState.current.mode === "playlist") {
     const playlist = playlists.find((entry) => entry.id === playbackState.current.playlistId);
     return tf("Sidebar.NowPlayingPlaylist", {
-      playlist: playlist?.name ?? "?",
-      track: currentTrack?.name ?? "?",
+      playlist: untitledName(playlist?.name),
+      track: untitledName(currentTrack?.name),
       paused: pausedMark,
     }, ({ playlist: currentPlaylist, track, paused }) => `Playing playlist: ${currentPlaylist} | ${track}${paused}`);
   }
 
   return tf("Sidebar.NowPlayingTrack", {
-    track: currentTrack?.name ?? "?",
+    track: untitledName(currentTrack?.name),
     paused: pausedMark,
   }, ({ track, paused }) => `Playing track: ${track}${paused}`);
 }
@@ -2130,16 +2448,179 @@ function getCurrentPlaybackLabelForManager(tracks, playlists) {
   if (playbackState.current.mode === "playlist") {
     const playlist = playlists.find((entry) => entry.id === playbackState.current.playlistId);
     return tf("Status.ManagerPlaylist", {
-      playlist: playlist?.name ?? "?",
-      track: currentTrack?.name ?? "?",
+      playlist: untitledName(playlist?.name),
+      track: untitledName(currentTrack?.name),
     }, ({ playlist: currentPlaylist, track }) => `Playlist: ${currentPlaylist} | Track: ${track}`);
   }
 
-  return tf("Status.ManagerTrack", { track: currentTrack?.name ?? "?" }, ({ track }) => `Track: ${track}`);
+  return tf("Status.ManagerTrack", { track: untitledName(currentTrack?.name) }, ({ track }) => `Track: ${track}`);
+}
+
+function getManagerNowPlayingDetails(tracks = getTracks(), playlists = getPlaylists(), files = getFiles()) {
+  const current = playbackState.current;
+  const liveMusicVolume = getLiveMusicVolume();
+  const liveRate = getLiveRate();
+  const summary = getCurrentPlaybackLabelForManager(tracks, playlists);
+
+  if (!current) {
+    return {
+      active: false,
+      summary,
+      title: t("Status.NothingPlaying", localizedFallback("Ничего не играет", "Nothing playing")),
+      context: t(
+        "Status.NothingPlayingHint",
+        localizedFallback("Запустите трек или плейлист в секциях ниже.", "Start a track or playlist from the sections below."),
+      ),
+      stateLabel: t("Status.Stopped", "Stopped"),
+      sourceName: t("Common.Empty", "Empty"),
+      sourcePath: "-",
+      volumePrimary: formatVolumePercent(liveMusicVolume),
+      volumeSecondary: localizedFallback("текущая live-громкость", "current live volume"),
+      hertzPrimary: t("Common.Off", "off"),
+      hertzSecondary: localizedFallback("нормализация не активна", "normalization inactive"),
+      speedPrimary: `${formatRate(liveRate)}x`,
+      speedSecondary: localizedFallback("текущая live-скорость", "current live speed"),
+      clipLabel: "-",
+      progressLabel: "-",
+      progressPercent: 0,
+      canSeek: false,
+    };
+  }
+
+  const track = tracks.find((entry) => entry.id === current.trackId) ?? null;
+  const playlist = current.mode === "playlist"
+    ? playlists.find((entry) => entry.id === current.playlistId) ?? null
+    : null;
+  const file = track?.fileId
+    ? files.find((entry) => entry.id === track.fileId) ?? null
+    : null;
+
+  const rawPath = String(file?.path ?? "");
+  const sourcePath = decodePathForDisplay(rawPath) || rawPath || "-";
+  const sourcePathParts = sourcePath.split(/[\\/]/).filter(Boolean);
+  const sourceName = untitledName(
+    file?.name
+      ?? sourcePathParts[sourcePathParts.length - 1]
+      ?? t("Common.FileMissingShort", "File?"),
+  );
+
+  const progress = track ? getTrackProgressForSidebar(track) : null;
+  const progressPercent = progress?.maxSeconds
+    ? clampNumber((progress.nowSeconds / progress.maxSeconds) * 100, 0, 100)
+    : 0;
+  const seekState = getCurrentPlaybackSeekState(current);
+  const clipStart = seekState?.clipStart ?? 0;
+  const clipEnd = seekState?.clipEnd ?? null;
+
+  const effectiveVolume = getEffectiveMusicVolume({
+    liveMusicVolume,
+    normalizationGain: current.normalizationGain,
+  });
+  const defaultRate = normalizeRate(Number(track?.rate ?? current.defaultRate ?? 1));
+  const appliedRate = normalizeRate(Number(current.timingRate ?? defaultRate));
+  const targetDb = getSessionNormalizationReferenceDb("music");
+  const hasNormalization = Boolean(current.normalizationEnabled) && Number.isFinite(current.normalizationDb);
+
+  const contextParts = [];
+  if (playlist) {
+    contextParts.push(`${t("Common.Playlist", "Playlist")}: ${untitledName(playlist.name)}`);
+  } else {
+    contextParts.push(t("Common.Track", "Track"));
+  }
+  if (current.mode === "playlist" && Array.isArray(current.queue) && current.queue.length) {
+    contextParts.push(`${Math.max(1, Number(current.index ?? 0) + 1)}/${current.queue.length}`);
+  }
+  if (current.paused) {
+    contextParts.push(t("Status.Paused", localizedFallback("Пауза", "Paused")));
+  }
+
+  return {
+    active: true,
+    summary,
+    title: untitledName(track?.name),
+    context: contextParts.join(" | "),
+    stateLabel: current.paused
+      ? t("Status.Paused", localizedFallback("Пауза", "Paused"))
+      : t("Status.Playing", localizedFallback("Играет", "Playing")),
+    sourceName,
+    sourcePath,
+    volumePrimary: `${formatVolumePercent(liveMusicVolume)} / ${formatVolumePercent(effectiveVolume)}`,
+    volumeSecondary: localizedFallback("live / итоговая", "live / final"),
+    hertzPrimary: hasNormalization
+      ? Number.isFinite(targetDb)
+        ? `${formatCompactMilliHertz(current.normalizationDb)} -> ${formatCompactMilliHertz(targetDb)} mHz`
+        : `${formatCompactMilliHertz(current.normalizationDb)} mHz`
+      : t("Common.Off", "off"),
+    hertzSecondary: hasNormalization
+      ? localizedFallback("текущие / целевые", "current / target")
+      : localizedFallback("нормализация выключена", "normalization off"),
+    speedPrimary: `${formatRate(defaultRate)}x / ${formatRate(liveRate)}x / ${formatRate(appliedRate)}x`,
+    speedSecondary: localizedFallback("трек / live / итоговая", "track / live / final"),
+    clipLabel: `${formatDurationClock(clipStart)} - ${Number.isFinite(clipEnd) ? formatDurationClock(clipEnd) : "--:--"}`,
+    progressLabel: progress?.label ?? "-",
+    progressPercent,
+    canSeek: Boolean(seekState?.canSeek),
+  };
+}
+
+function syncManagerNowPlayingUi(root, details = getManagerNowPlayingDetails()) {
+  const card = root.querySelector("[data-now-playing]");
+  if (!(card instanceof HTMLElement)) return;
+
+  card.classList.toggle("is-active", Boolean(details.active));
+  card.classList.toggle("is-idle", !details.active);
+
+  syncManagerTextControl(root, "[data-now-playing-summary]", details.summary);
+  syncManagerTextControl(root, "[data-now-playing-title]", details.title);
+  syncManagerTextControl(root, "[data-now-playing-context]", details.context);
+  syncManagerTextControl(root, "[data-now-playing-state]", details.stateLabel);
+  syncManagerTextControl(root, "[data-now-playing-source-name]", details.sourceName);
+  syncManagerTextControl(root, "[data-now-playing-source-path]", details.sourcePath);
+  syncManagerTextControl(root, "[data-now-playing-volume-primary]", details.volumePrimary);
+  syncManagerTextControl(root, "[data-now-playing-volume-secondary]", details.volumeSecondary);
+  syncManagerTextControl(root, "[data-now-playing-hertz-primary]", details.hertzPrimary);
+  syncManagerTextControl(root, "[data-now-playing-hertz-secondary]", details.hertzSecondary);
+  syncManagerTextControl(root, "[data-now-playing-speed-primary]", details.speedPrimary);
+  syncManagerTextControl(root, "[data-now-playing-speed-secondary]", details.speedSecondary);
+  syncManagerTextControl(root, "[data-now-playing-clip]", details.clipLabel);
+  syncManagerTextControl(root, "[data-now-playing-progress-label]", details.progressLabel);
+
+  const progressFill = root.querySelector("[data-now-playing-progress-fill]");
+  if (progressFill instanceof HTMLElement) {
+    progressFill.style.width = `${details.progressPercent}%`;
+  }
+
+  const progressBar = root.querySelector("[data-now-playing-progress-bar]");
+  if (progressBar instanceof HTMLElement) {
+    progressBar.classList.toggle("is-seekable", Boolean(details.canSeek));
+    progressBar.setAttribute("aria-disabled", details.canSeek ? "false" : "true");
+  }
+
+  const status = root.querySelector(".ts-dj-now-playing-actions");
+  if (status instanceof HTMLElement) {
+    let stopButton = status.querySelector("button[data-action='stop']");
+    if (details.active) {
+      if (!stopButton) {
+        stopButton = document.createElement("button");
+        stopButton.type = "button";
+        stopButton.className = "ts-dj-icon-button";
+        stopButton.dataset.action = "stop";
+        stopButton.title = t("Common.Stop", "Stop");
+        stopButton.setAttribute("aria-label", t("Common.Stop", "Stop"));
+        stopButton.innerHTML = "<i class=\"fas fa-stop\"></i>";
+        status.appendChild(stopButton);
+      }
+    } else if (stopButton) {
+      stopButton.remove();
+    }
+  }
 }
 
 function getManagerCardTemplateState() {
   return {
+    nowPlaying: {
+      expanded: Boolean(managerCardExpandState.nowPlaying),
+    },
     musicPlaylists: {
       expanded: Boolean(managerCardExpandState.musicPlaylists),
     },
@@ -2164,28 +2645,8 @@ function refreshManagerRuntimeUi() {
   const playlists = getPlaylists();
   const current = playbackState.current;
   const paused = Boolean(current?.paused);
-
-  const statusLabel = root.querySelector(".ts-dj-status > span");
-  if (statusLabel) statusLabel.textContent = getCurrentPlaybackLabelForManager(tracks, playlists);
-
-  const status = root.querySelector(".ts-dj-status");
-  if (status) {
-    let stopButton = status.querySelector("button[data-action='stop']");
-    if (current) {
-      if (!stopButton) {
-        stopButton = document.createElement("button");
-        stopButton.type = "button";
-        stopButton.className = "ts-dj-icon-button";
-        stopButton.dataset.action = "stop";
-        stopButton.title = t("Common.Stop", "Stop");
-        stopButton.setAttribute("aria-label", t("Common.Stop", "Stop"));
-        stopButton.innerHTML = "<i class=\"fas fa-stop\"></i>";
-        status.appendChild(stopButton);
-      }
-    } else if (stopButton) {
-      stopButton.remove();
-    }
-  }
+  const nowPlaying = getManagerNowPlayingDetails(tracks, playlists, getFiles());
+  syncManagerNowPlayingUi(root, nowPlaying);
 
   syncManagerRangeControl(root, "[data-action='set-live-rate']", ".ts-dj-live-rate-value", getLiveRate(), formatRate);
   syncManagerTextControl(root, "[data-normalization-label='music']", t("App.MusicNormalization", localizedFallback("РќРѕСЂРј. РјСѓР·С‹РєРё:", "Norm. music:")));
@@ -2194,14 +2655,16 @@ function refreshManagerRuntimeUi() {
   syncManagerTextControl(root, "[data-normalization-monitor='ambience']", getNormalizationMonitorLabel("ambience"));
   syncManagerInputControl(root, "[data-normalization-input='music']", formatManualNormalizationInputValue("music"));
   syncManagerInputControl(root, "[data-normalization-input='ambience']", formatManualNormalizationInputValue("ambience"));
-  syncManagerButtonControl(root, "[data-normalization-scan-button='music']", {
-    label: getNormalizationScanButtonLabel("music"),
-    disabled: normalizationScanState.music,
-  });
-  syncManagerButtonControl(root, "[data-normalization-scan-button='ambience']", {
-    label: getNormalizationScanButtonLabel("ambience"),
-    disabled: normalizationScanState.ambience,
-  });
+  for (const profileId of NORMALIZATION_SCAN_PROFILE_ORDER) {
+    syncManagerButtonControl(root, `[data-normalization-scan-button='music'][data-normalization-scan-profile='${profileId}']`, {
+      label: getNormalizationScanButtonLabel("music", profileId),
+      disabled: isNormalizationScanRunning("music"),
+    });
+    syncManagerButtonControl(root, `[data-normalization-scan-button='ambience'][data-normalization-scan-profile='${profileId}']`, {
+      label: getNormalizationScanButtonLabel("ambience", profileId),
+      disabled: isNormalizationScanRunning("ambience"),
+    });
+  }
   syncManagerRangeControl(root, "[data-action='set-live-music-volume']", ".ts-dj-live-music-volume-value", getLiveMusicVolume(), formatVolumePercent);
   syncManagerRangeControl(root, "[data-action='set-live-ambience-volume']", ".ts-dj-live-ambience-volume-value", getLiveAmbienceVolume(), formatVolumePercent);
 
@@ -2722,18 +3185,31 @@ function getNormalizationMonitorLabel(channel) {
 }
 
 function getTrackNormalizationCacheKey(track, filePath) {
+  return getTrackNormalizationCacheKeyForProfile(track, filePath, getTrackNormalizationScanProfileId(track));
+}
+
+function getNormalizationMonitorParts(channel) {
+  const display = getSessionNormalizationDisplay(channel);
+  return {
+    source: formatCompactMilliHertz(display.originalDb),
+    target: formatCompactMilliHertz(display.targetDb),
+  };
+}
+
+function getTrackNormalizationCacheKeyForProfile(track, filePath, profileId = DEFAULT_NORMALIZATION_SCAN_PROFILE) {
   const clipStartRaw = parseTimeInput(track?.start);
   const clipStart = Number.isFinite(clipStartRaw) && clipStartRaw >= 0 ? clipStartRaw : 0;
   const clipEndRaw = parseTimeInput(track?.end);
   const clipEnd = Number.isFinite(clipEndRaw) && clipEndRaw > clipStart ? clipEndRaw : null;
+  const profile = getNormalizationScanProfile(profileId);
   return [
     NORMALIZATION_ANALYSIS_VERSION,
     filePath,
     clipStart.toFixed(3),
     Number.isFinite(clipEnd) ? clipEnd.toFixed(3) : "end",
     NORMALIZATION_SCAN_WINDOW_SEC,
-    NORMALIZATION_SCAN_WINDOW_COUNT,
-    NORMALIZATION_SCAN_SAMPLE_STEP,
+    profile.windowCount,
+    profile.sampleStep,
   ].join("|");
 }
 
@@ -2762,14 +3238,16 @@ function getStoredTrackNormalizationLoudnessDb(track, filePath) {
   return Number.isFinite(loudnessDb) ? loudnessDb : null;
 }
 
-function updateTrackNormalizationMetadata(track, filePath, loudnessDb, { channel = null } = {}) {
+function updateTrackNormalizationMetadata(track, filePath, loudnessDb, { channel = null, profileId = null } = {}) {
   const numeric = Number(loudnessDb);
   if (!track || !filePath || !Number.isFinite(numeric)) return null;
 
-  const cacheKey = getTrackNormalizationCacheKey(track, filePath);
+  const profile = getNormalizationScanProfile(profileId ?? getTrackNormalizationScanProfileId(track));
+  const cacheKey = getTrackNormalizationCacheKeyForProfile(track, filePath, profile.id);
   const applyToTrack = (target) => {
     if (!target || typeof target !== "object") return;
     target.normalizationAnalysisVersion = NORMALIZATION_ANALYSIS_VERSION;
+    target.normalizationScanProfile = profile.id;
     target.normalizationCacheKey = cacheKey;
     target.normalizationLoudnessDb = numeric;
   };
@@ -2800,11 +3278,12 @@ function getCachedTrackLoudnessDb(track, filePath) {
   return Number.isFinite(value) ? value : null;
 }
 
-function setCachedTrackLoudnessDb(track, filePath, loudnessDb, { channel = null } = {}) {
+function setCachedTrackLoudnessDb(track, filePath, loudnessDb, { channel = null, profileId = null } = {}) {
   const numeric = Number(loudnessDb);
   if (!Number.isFinite(numeric)) return;
-  const cacheKey = updateTrackNormalizationMetadata(track, filePath, numeric, { channel })
-    ?? getTrackNormalizationCacheKey(track, filePath);
+  const profile = getNormalizationScanProfile(profileId ?? getTrackNormalizationScanProfileId(track));
+  const cacheKey = updateTrackNormalizationMetadata(track, filePath, numeric, { channel, profileId: profile.id })
+    ?? getTrackNormalizationCacheKeyForProfile(track, filePath, profile.id);
   normalizationAnalysisCache.set(cacheKey, numeric);
   if (!storageState.normalizationCache || typeof storageState.normalizationCache !== "object") {
     storageState.normalizationCache = {};
@@ -2837,7 +3316,7 @@ function getNormalizationTargetDurationSec(maxDurationSec) {
   return MAX_NORMALIZATION_ANALYSIS_SEC;
 }
 
-function getNormalizationProbeOffsets(clipStart, clipEnd, analysisDuration) {
+function getNormalizationProbeOffsets(clipStart, clipEnd, analysisDuration, { windowCount = null } = {}) {
   const safeClipStart = Number.isFinite(clipStart) ? Math.max(0, Number(clipStart)) : 0;
   const safeAnalysisDuration = Number.isFinite(analysisDuration)
     ? Math.max(0.05, Number(analysisDuration))
@@ -2859,7 +3338,7 @@ function getNormalizationProbeOffsets(clipStart, clipEnd, analysisDuration) {
     offsets.push(numeric);
   };
 
-  const positions = Math.max(1, NORMALIZATION_SCAN_WINDOW_COUNT);
+  const positions = Math.max(1, Number(windowCount) || getNormalizationScanProfile().windowCount);
   if (positions === 1) {
     pushOffset(safeClipStart + ((availableDuration - windowDuration) / 2));
   } else {
@@ -2888,12 +3367,13 @@ function getWorkingBlockRms(tracker) {
   return Number.isFinite(rms) && rms > 0 ? rms : null;
 }
 
-function analyzeSamplesSparse(channelData, step = NORMALIZATION_SCAN_SAMPLE_STEP) {
+function analyzeSamplesSparse(channelData, step = null) {
+  const sampleStep = Math.max(1, Number(step) || getNormalizationScanProfile().sampleStep);
   let peak = 0;
   let sumSq = 0;
   let count = 0;
 
-  for (let index = 0; index < channelData.length; index += step) {
+  for (let index = 0; index < channelData.length; index += sampleStep) {
     const sample = channelData[index];
     const absolute = Math.abs(sample);
     if (absolute > peak) peak = absolute;
@@ -3152,21 +3632,22 @@ async function seekNormalizationMediaElement(audio, timeSec) {
   return safeTarget;
 }
 
-function sampleSparseAnalyserFrame(analyser, floatData = null, byteData = null) {
+function sampleSparseAnalyserFrame(analyser, floatData = null, byteData = null, { sampleStep = null } = {}) {
   if (!analyser) return null;
 
   if (floatData && typeof analyser.getFloatTimeDomainData === "function") {
     analyser.getFloatTimeDomainData(floatData);
-    return analyzeSamplesSparse(floatData, NORMALIZATION_SCAN_SAMPLE_STEP);
+    return analyzeSamplesSparse(floatData, sampleStep);
   }
 
   if (byteData && typeof analyser.getByteTimeDomainData === "function") {
     analyser.getByteTimeDomainData(byteData);
+    const effectiveStep = Math.max(1, Number(sampleStep) || getNormalizationScanProfile().sampleStep);
     let peak = 0;
     let sumSq = 0;
     let count = 0;
 
-    for (let index = 0; index < byteData.length; index += NORMALIZATION_SCAN_SAMPLE_STEP) {
+    for (let index = 0; index < byteData.length; index += effectiveStep) {
       const sample = (byteData[index] - 128) / 128;
       const absolute = Math.abs(sample);
       if (absolute > peak) peak = absolute;
@@ -3186,7 +3667,7 @@ function sampleSparseAnalyserFrame(analyser, floatData = null, byteData = null) 
   return null;
 }
 
-async function analyzeNormalizationMediaWindow(analyzer, startSec, durationSec) {
+async function analyzeNormalizationMediaWindow(analyzer, startSec, durationSec, { sampleStep = null } = {}) {
   if (!analyzer?.audio || !(durationSec > 0)) return null;
 
   const windowDuration = Math.max(0.05, Number(durationSec) || 0);
@@ -3211,7 +3692,7 @@ async function analyzeNormalizationMediaWindow(analyzer, startSec, durationSec) 
 
   try {
     while ((Number(analyzer.audio.currentTime) || 0) < (targetEnd - 0.01)) {
-      const frame = sampleSparseAnalyserFrame(analyzer.analyser, analyzer.floatData, analyzer.byteData);
+      const frame = sampleSparseAnalyserFrame(analyzer.analyser, analyzer.floatData, analyzer.byteData, { sampleStep });
       if (frame) {
         frameAnalyses.push(frame);
       }
@@ -3221,7 +3702,7 @@ async function analyzeNormalizationMediaWindow(analyzer, startSec, durationSec) 
       await waitMs(NORMALIZATION_POLL_MS);
     }
 
-    const finalFrame = sampleSparseAnalyserFrame(analyzer.analyser, analyzer.floatData, analyzer.byteData);
+    const finalFrame = sampleSparseAnalyserFrame(analyzer.analyser, analyzer.floatData, analyzer.byteData, { sampleStep });
     if (finalFrame) {
       frameAnalyses.push(finalFrame);
     }
@@ -3236,7 +3717,11 @@ async function analyzeNormalizationMediaWindow(analyzer, startSec, durationSec) 
   return combineSparseAnalyses(frameAnalyses);
 }
 
-async function scanTrackNormalizationLoudnessWithAnalyzer(track, filePath, analyzer, { channel = "music" } = {}) {
+async function scanTrackNormalizationLoudnessWithAnalyzer(track, filePath, analyzer, {
+  channel = "music",
+  profileId = null,
+} = {}) {
+  const profile = getNormalizationScanProfile(profileId ?? getTrackNormalizationScanProfileId(track));
   const { clipStart, clipEnd } = getTrackNormalizationClipRange(track, analyzer?.audio?.duration ?? null);
   const availableDuration = Number.isFinite(clipEnd) && clipEnd > clipStart
     ? (clipEnd - clipStart)
@@ -3244,11 +3729,15 @@ async function scanTrackNormalizationLoudnessWithAnalyzer(track, filePath, analy
   if (!(availableDuration > 0)) return null;
 
   const windowDuration = Math.max(0.05, Math.min(NORMALIZATION_SCAN_WINDOW_SEC, availableDuration));
-  const windowOffsets = getNormalizationProbeOffsets(clipStart, clipEnd, windowDuration);
+  const windowOffsets = getNormalizationProbeOffsets(clipStart, clipEnd, windowDuration, {
+    windowCount: profile.windowCount,
+  });
   const windowAnalyses = [];
 
   for (const offset of windowOffsets) {
-    const analysis = await analyzeNormalizationMediaWindow(analyzer, offset, windowDuration);
+    const analysis = await analyzeNormalizationMediaWindow(analyzer, offset, windowDuration, {
+      sampleStep: profile.sampleStep,
+    });
     if (analysis) {
       windowAnalyses.push(analysis);
     }
@@ -3256,7 +3745,7 @@ async function scanTrackNormalizationLoudnessWithAnalyzer(track, filePath, analy
 
   const loudnessDb = resolveSparseWindowLoudnessDb(windowAnalyses);
   if (Number.isFinite(loudnessDb)) {
-    setCachedTrackLoudnessDb(track, filePath, loudnessDb, { channel });
+    setCachedTrackLoudnessDb(track, filePath, loudnessDb, { channel, profileId: profile.id });
     return loudnessDb;
   }
   return null;
@@ -3289,8 +3778,11 @@ function resolveSparseWindowLoudnessDb(windowAnalyses = []) {
 async function scanTrackNormalizationLoudness(track, filePath, {
   channel = "music",
   analysisResources = null,
+  profileId = null,
 } = {}) {
-  const cachedLoudness = getCachedTrackLoudnessDb(track, filePath);
+  const profile = getNormalizationScanProfile(profileId ?? getTrackNormalizationScanProfileId(track));
+  const cacheKey = getTrackNormalizationCacheKeyForProfile(track, filePath, profile.id);
+  const cachedLoudness = Number(normalizationAnalysisCache.get(cacheKey));
   if (Number.isFinite(cachedLoudness)) {
     return cachedLoudness;
   }
@@ -3301,7 +3793,7 @@ async function scanTrackNormalizationLoudness(track, filePath, {
   try {
     const analyzer = await createNormalizationMediaAnalyzer(filePath, resources);
     try {
-      return await scanTrackNormalizationLoudnessWithAnalyzer(track, filePath, analyzer, { channel });
+      return await scanTrackNormalizationLoudnessWithAnalyzer(track, filePath, analyzer, { channel, profileId: profile.id });
     } finally {
       cleanupNormalizationMediaAnalyzer(analyzer);
     }
@@ -3312,11 +3804,12 @@ async function scanTrackNormalizationLoudness(track, filePath, {
   }
 }
 
-async function scanNormalizationTracks(channel) {
+async function scanNormalizationTracks(channel, profileId = DEFAULT_NORMALIZATION_SCAN_PROFILE) {
   const channelKey = getNormalizationChannelKey(channel);
   if (normalizationScanState[channelKey]) return false;
+  const profile = getNormalizationScanProfile(profileId);
 
-  normalizationScanState[channelKey] = true;
+  normalizationScanState[channelKey] = profile.id;
   refreshLiveControlsUi();
   let analysisResources = null;
 
@@ -3342,10 +3835,18 @@ async function scanNormalizationTracks(channel) {
     let scanned = 0;
     let skipped = 0;
     let failed = 0;
+    let metadataUpdated = false;
     const tracksByFile = new Map();
 
     for (const { track, filePath } of candidates) {
-      if (Number.isFinite(getCachedTrackLoudnessDb(track, filePath))) {
+      const cacheKey = getTrackNormalizationCacheKeyForProfile(track, filePath, profile.id);
+      const cachedLoudnessDb = Number(normalizationAnalysisCache.get(cacheKey));
+      if (Number.isFinite(cachedLoudnessDb)) {
+        updateTrackNormalizationMetadata(track, filePath, cachedLoudnessDb, {
+          channel: channelKey,
+          profileId: profile.id,
+        });
+        metadataUpdated = true;
         skipped += 1;
         continue;
       }
@@ -3355,6 +3856,13 @@ async function scanNormalizationTracks(channel) {
     }
 
     if (!tracksByFile.size) {
+      if (metadataUpdated) {
+        if (channelKey === "ambience") {
+          await setAmbienceTracks(storageState.ambienceTracks);
+        } else {
+          await setTracks(storageState.tracks);
+        }
+      }
       const summary = channelKey === "ambience"
         ? localizedFallback(
           `TS-DJ-MUSIC: скан эмбиенса завершён. Успешно ${scanned}, пропущено ${skipped}, ошибок ${failed}.`,
@@ -3377,6 +3885,7 @@ async function scanNormalizationTracks(channel) {
           try {
             const loudnessDb = await scanTrackNormalizationLoudnessWithAnalyzer(track, filePath, analyzer, {
               channel: channelKey,
+              profileId: profile.id,
             });
             if (Number.isFinite(loudnessDb)) {
               scanned += 1;
@@ -3411,7 +3920,7 @@ async function scanNormalizationTracks(channel) {
       }
     }
 
-    if (scanned > 0) {
+    if (scanned > 0 || metadataUpdated) {
       if (channelKey === "ambience") {
         await setAmbienceTracks(storageState.ambienceTracks);
       } else {
@@ -3432,7 +3941,7 @@ async function scanNormalizationTracks(channel) {
     return failed === 0;
   } finally {
     await disposeNormalizationAnalysisResources(analysisResources);
-    normalizationScanState[channelKey] = false;
+    normalizationScanState[channelKey] = null;
     refreshLiveControlsUi();
   }
 }
@@ -4125,23 +4634,22 @@ function normalizeMusicPlaylistFolderEntry(raw, seenTrackIds = new Set()) {
 function normalizeMusicPlaylistEntry(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
   const seenTrackIds = new Set();
+  const folders = normalizeArray(source.folders)
+    .map((folder) => normalizeMusicPlaylistFolderEntry(folder, seenTrackIds));
   const rootTrackIds = normalizeArray(source.trackIds)
     .map((trackId) => String(trackId ?? "").trim())
     .filter((trackId) => trackId && !seenTrackIds.has(trackId));
   for (const trackId of rootTrackIds) {
     seenTrackIds.add(trackId);
   }
-
-  const folderTrackIds = normalizeArray(source.folders)
-    .flatMap((folder) => normalizeMusicPlaylistFolderEntry(folder, seenTrackIds).trackIds);
   return {
     ...source,
     id: String(source.id ?? "").trim() || foundry.utils.randomID(),
     name: String(source.name ?? "").trim(),
     loop: Boolean(source.loop),
     shuffle: Boolean(source.shuffle),
-    trackIds: [...rootTrackIds, ...folderTrackIds],
-    folders: [],
+    trackIds: rootTrackIds,
+    folders,
   };
 }
 
@@ -4158,12 +4666,19 @@ function cloneMusicPlaylistEntry(raw) {
 }
 
 function getMusicPlaylistFolders(playlist) {
-  return [];
+  const normalized = normalizeMusicPlaylistEntry(playlist);
+  return normalized.folders.map((folder) => ({
+    ...folder,
+    trackIds: [...folder.trackIds],
+  }));
 }
 
 function getMusicPlaylistOrderedTrackIds(playlist, validTrackIds = null) {
   const normalized = normalizeMusicPlaylistEntry(playlist);
-  const orderedIds = [...normalized.trackIds];
+  const orderedIds = [
+    ...normalized.trackIds,
+    ...normalized.folders.flatMap((folder) => folder.trackIds),
+  ];
   if (!(validTrackIds instanceof Set)) return orderedIds;
   return orderedIds.filter((trackId) => validTrackIds.has(trackId));
 }
@@ -4257,6 +4772,10 @@ function normalizeTrackFolderEntry(raw) {
   };
 }
 
+function normalizeTrackRootName(value) {
+  return String(value ?? "").trim();
+}
+
 function normalizeTrackFolderId(value, folders = []) {
   const folderId = String(value ?? "").trim();
   if (!folderId) return "";
@@ -4277,7 +4796,7 @@ function getPlaylistTrackEditorName(track) {
   return untitledName(track?.name);
 }
 
-function getPlaylistTrackGroupsForEditor(tracks, folders = [], selectedTrackIds = []) {
+function getPlaylistTrackGroupsForEditor(tracks, folders = [], selectedTrackIds = [], rootName = "") {
   const normalizedTracks = tracks.map((track) => ({
     ...track,
     name: getPlaylistTrackEditorName(track),
@@ -4300,7 +4819,7 @@ function getPlaylistTrackGroupsForEditor(tracks, folders = [], selectedTrackIds 
     {
       id: "",
       key: "__root__",
-      name: t("Common.WithoutFolder", "Without folder"),
+      name: normalizeTrackRootName(rootName) || t("Common.WithoutFolder", "Without folder"),
       tracks: [],
     },
     ...sortedFolders.map((folder) => ({
@@ -4470,6 +4989,10 @@ function getTrackFolders() {
   return normalizeArray(storageState.trackFolders).map((entry) => normalizeTrackFolderEntry(entry));
 }
 
+function getTrackRootName() {
+  return normalizeTrackRootName(storageState.trackRootName);
+}
+
 function getAmbienceTracks() {
   return normalizeArray(storageState.ambienceTracks);
 }
@@ -4480,6 +5003,10 @@ function getAmbiencePlaylists() {
 
 function getAmbienceTrackFolders() {
   return normalizeArray(storageState.ambienceTrackFolders).map((entry) => normalizeTrackFolderEntry(entry));
+}
+
+function getAmbienceTrackRootName() {
+  return normalizeTrackRootName(storageState.ambienceTrackRootName);
 }
 
 function getAmbienceAllowConcurrent() {
@@ -4538,6 +5065,10 @@ async function setTrackFolders(folders) {
   await setStorageValue("trackFolders", normalizeArray(folders).map((entry) => normalizeTrackFolderEntry(entry)));
 }
 
+async function setTrackRootName(name) {
+  await setStorageValue("trackRootName", normalizeTrackRootName(name));
+}
+
 async function setAmbienceTracks(tracks) {
   await setStorageValue("ambienceTracks", normalizeArray(tracks));
 }
@@ -4548,6 +5079,10 @@ async function setAmbiencePlaylists(playlists) {
 
 async function setAmbienceTrackFolders(folders) {
   await setStorageValue("ambienceTrackFolders", normalizeArray(folders).map((entry) => normalizeTrackFolderEntry(entry)));
+}
+
+async function setAmbienceTrackRootName(name) {
+  await setStorageValue("ambienceTrackRootName", normalizeTrackRootName(name));
 }
 
 async function setAmbienceAllowConcurrent(enabled) {
@@ -5029,8 +5564,21 @@ async function resetModuleSettingsToDefaults() {
   await game.settings.set(MODULE_ID, SETTING_KEYS.collapseGlobalVolumeByDefault, DEFAULT_CLIENT_SETTINGS.collapseGlobalVolumeByDefault);
   await game.settings.set(MODULE_ID, SETTING_KEYS.collapseTsDjPlaylistsByDefault, DEFAULT_CLIENT_SETTINGS.collapseTsDjPlaylistsByDefault);
   await game.settings.set(MODULE_ID, SETTING_KEYS.collapseFoundryPlaylistsByDefault, DEFAULT_CLIENT_SETTINGS.collapseFoundryPlaylistsByDefault);
+  await game.settings.set(MODULE_ID, SETTING_KEYS.collapseManagerNormalizationByDefault, DEFAULT_CLIENT_SETTINGS.collapseManagerNormalizationByDefault);
+  await game.settings.set(MODULE_ID, SETTING_KEYS.collapseManagerFilesByDefault, DEFAULT_CLIENT_SETTINGS.collapseManagerFilesByDefault);
+  await game.settings.set(MODULE_ID, SETTING_KEYS.collapseManagerMusicByDefault, DEFAULT_CLIENT_SETTINGS.collapseManagerMusicByDefault);
+  await game.settings.set(MODULE_ID, SETTING_KEYS.collapseManagerAmbienceByDefault, DEFAULT_CLIENT_SETTINGS.collapseManagerAmbienceByDefault);
+  await game.settings.set(MODULE_ID, SETTING_KEYS.collapseManagerNowPlayingByDefault, DEFAULT_CLIENT_SETTINGS.collapseManagerNowPlayingByDefault);
+  await game.settings.set(MODULE_ID, SETTING_KEYS.collapseManagerMusicPlaylistsByDefault, DEFAULT_CLIENT_SETTINGS.collapseManagerMusicPlaylistsByDefault);
+  await game.settings.set(MODULE_ID, SETTING_KEYS.collapseManagerMusicTracksByDefault, DEFAULT_CLIENT_SETTINGS.collapseManagerMusicTracksByDefault);
+  await game.settings.set(MODULE_ID, SETTING_KEYS.collapseManagerAmbiencePlaylistsByDefault, DEFAULT_CLIENT_SETTINGS.collapseManagerAmbiencePlaylistsByDefault);
+  await game.settings.set(MODULE_ID, SETTING_KEYS.collapseManagerAmbienceTracksByDefault, DEFAULT_CLIENT_SETTINGS.collapseManagerAmbienceTracksByDefault);
   sidebarUiState.defaultsLoaded = false;
+  managerUiState.defaultsLoaded = false;
   refreshPlaylistDirectoryUi();
+  if (appInstance?.rendered) {
+    appInstance.render(false);
+  }
   notify("info", "SettingsReset", {}, "TS-DJ-MUSIC: settings reset.");
   return true;
 }
@@ -5046,6 +5594,7 @@ function openApp() {
     return appInstance;
   }
 
+  managerUiState.defaultsLoaded = false;
   appInstance = new TsDjMusicApp();
   appInstance.render(true);
   return appInstance;
@@ -5949,6 +6498,100 @@ async function resumeCurrentPlayback(options = {}) {
   }
 }
 
+function getCurrentPlaybackSeekState(current = playbackState.current) {
+  if (!current) return null;
+
+  const track = getTracks().find((entry) => entry.id === current.trackId) ?? null;
+  const clipStart = Number.isFinite(current.clipStart) ? Number(current.clipStart) : parseTimeInput(track?.start) ?? 0;
+  const requestedClipEnd = Number.isFinite(current.clipEnd) ? Number(current.clipEnd) : parseTimeInput(track?.end);
+  const soundDuration = getSoundDuration(current.sound);
+  const clipEnd = Number.isFinite(requestedClipEnd)
+    ? Number(requestedClipEnd)
+    : Number.isFinite(soundDuration)
+      ? Number(soundDuration)
+      : null;
+  const canSeek = Number.isFinite(clipEnd) && clipEnd > clipStart;
+
+  return {
+    current,
+    track,
+    clipStart,
+    clipEnd,
+    canSeek,
+    maxSeekTime: canSeek ? Math.max(clipStart, clipEnd - 0.01) : clipStart,
+  };
+}
+
+async function seekCurrentPlayback(timeSec, options = {}) {
+  const { sync = true } = options;
+  if (sync && !ensureModuleControlAccess()) return false;
+
+  const seekState = getCurrentPlaybackSeekState();
+  if (!seekState?.canSeek) return false;
+
+  const current = seekState.current;
+  const targetTime = clampNumber(Number(timeSec), seekState.clipStart, seekState.maxSeekTime);
+  const appliedRate = normalizeRate(Number(current.timingRate ?? current.defaultRate ?? getLiveRate()));
+
+  if (current.paused) {
+    current.pausedAt = targetTime;
+    current.timingBaseAbs = targetTime;
+    current.timingBaseMs = Date.now();
+    current.timingRate = appliedRate;
+    updateSidebarProgressUi();
+    updateManagerProgressUi();
+    if (sync) {
+      emitModuleSocketEvent(SOCKET_ACTIONS.seekPlayback, { timeSec: targetTime });
+    }
+    return true;
+  }
+
+  clearClipEndMonitor(current);
+  current.ignoreEndedUntil = Date.now() + 1200;
+
+  if (seekSoundToTime(current.sound, targetTime)) {
+    current.pausedAt = null;
+    current.timingBaseAbs = targetTime;
+    current.timingBaseMs = Date.now();
+    current.timingRate = appliedRate;
+
+    if (Number.isFinite(seekState.clipEnd) && !current.loopEnabled) {
+      current.clipMonitorId = startClipEndMonitor(current.sound, seekState.clipStart, seekState.clipEnd, current.token);
+    }
+
+    await ensureSoundKeepsPlaying(current.sound);
+    updateSidebarProgressUi();
+    updateManagerProgressUi();
+    startSidebarProgressTicker();
+
+    if (sync) {
+      emitModuleSocketEvent(SOCKET_ACTIONS.seekPlayback, { timeSec: targetTime });
+    }
+    return true;
+  }
+
+  if (!seekState.track) return false;
+
+  const queue = Array.isArray(current.queue) && current.queue.length
+    ? [...current.queue]
+    : [seekState.track.id];
+  const restarted = await playTrack(seekState.track, {
+    mode: current.mode ?? "track",
+    playlistId: current.playlistId ?? null,
+    queue,
+    index: Number.isFinite(current.index) ? current.index : 0,
+    playlistLoop: Boolean(current.playlistLoop),
+    playlistShuffle: Boolean(current.playlistShuffle),
+    loopOverride: Boolean(current.loopEnabled),
+    playOffset: targetTime,
+  });
+
+  if (sync && restarted) {
+    emitModuleSocketEvent(SOCKET_ACTIONS.seekPlayback, { timeSec: targetTime });
+  }
+  return restarted;
+}
+
 class TsDjMusicApp extends Application {
   static get defaultOptions() {
     return foundry.utils.mergeObject(super.defaultOptions, {
@@ -5963,6 +6606,8 @@ class TsDjMusicApp extends Application {
   }
 
   getData() {
+    initializeManagerSectionStateFromSettings();
+
     const current = playbackState.current;
     const files = sortEntriesByName(getFiles().map((file) => {
       const rawPath = String(file.path ?? "");
@@ -6012,6 +6657,7 @@ class TsDjMusicApp extends Application {
       };
     }));
     const looseTracks = tracks.filter((track) => !normalizeTrackFolderId(track.folderId, trackFolders));
+    const musicRootName = getTrackRootName() || t("Common.WithoutFolder", "Without folder");
 
     const playlists = sortEntriesByName(getPlaylists().map((playlist) => {
       const validTrackIds = getMusicPlaylistOrderedTrackIds(playlist, new Set(trackMap.keys()));
@@ -6092,6 +6738,7 @@ class TsDjMusicApp extends Application {
       };
     }));
     const looseAmbienceTracks = ambienceTracks.filter((track) => !normalizeTrackFolderId(track.folderId, ambienceTrackFolders));
+    const ambienceRootName = getAmbienceTrackRootName() || t("Common.WithoutFolder", "Without folder");
 
     const ambienceTrackMap = new Map(ambienceTracks.map((track) => [track.id, track]));
     const ambiencePlaylists = sortEntriesByName(getAmbiencePlaylists().map((playlist) => {
@@ -6137,6 +6784,7 @@ class TsDjMusicApp extends Application {
     }));
 
     const currentLabel = this.#getCurrentLabel(tracks, playlists);
+    const nowPlaying = getManagerNowPlayingDetails(tracks, playlists, files);
     const liveRate = getLiveRate();
     const liveMusicVolume = getLiveMusicVolume();
     const liveAmbienceVolume = getLiveAmbienceVolume();
@@ -6148,15 +6796,13 @@ class TsDjMusicApp extends Application {
       musicAutoLevelLabel: t("App.MusicNormalization", localizedFallback("РќРѕСЂРј. РјСѓР·С‹РєРё:", "Norm. music:")),
       musicAutoLevelMonitor: getNormalizationMonitorLabel("music"),
       musicNormalizationInputValue: formatManualNormalizationInputValue("music"),
-      musicNormalizationScanLabel: getNormalizationScanButtonLabel("music"),
-      musicNormalizationScanDisabled: normalizationScanState.music,
+      musicNormalizationScanButtons: getNormalizationScanButtons("music"),
       normalizationSetLabel: t("Settings.ManualNormalizationSet", "Set"),
       normalizationResetLabel: t("Settings.ManualNormalizationReset", "Reset"),
       ambienceAutoLevelLabel: t("App.AmbienceNormalization", localizedFallback("РќРѕСЂРј. СЌРјР±РёРµРЅСЃР°:", "Norm. ambience:")),
       ambienceAutoLevelMonitor: getNormalizationMonitorLabel("ambience"),
       ambienceNormalizationInputValue: formatManualNormalizationInputValue("ambience"),
-      ambienceNormalizationScanLabel: getNormalizationScanButtonLabel("ambience"),
-      ambienceNormalizationScanDisabled: normalizationScanState.ambience,
+      ambienceNormalizationScanButtons: getNormalizationScanButtons("ambience"),
       liveMusicVolume,
       liveMusicVolumeLabel: formatVolumePercent(liveMusicVolume),
       liveAmbienceVolume,
@@ -6165,12 +6811,14 @@ class TsDjMusicApp extends Application {
       files,
       tracks,
       trackFolders,
+      musicRootName,
       looseTracks,
       musicRootCollapsed: !Boolean(managerTrackRootExpandState.music),
       musicRootTrackCount: looseTracks.length,
       playlists,
       ambienceTracks,
       ambienceTrackFolders,
+      ambienceRootName,
       looseAmbienceTracks,
       ambienceRootCollapsed: !Boolean(managerTrackRootExpandState.ambience),
       ambienceRootTrackCount: looseAmbienceTracks.length,
@@ -6186,6 +6834,14 @@ class TsDjMusicApp extends Application {
       hasAmbiencePlaylists: ambiencePlaylists.length > 0,
       isPlaying: Boolean(playbackState.current),
       currentLabel,
+      nowPlaying,
+      nowPlayingTitle: t("Status.NowPlayingTitle", localizedFallback("Сейчас играет", "Now playing")),
+      nowPlayingSourceTitle: t("Status.Source", localizedFallback("Источник", "Source")),
+      nowPlayingVolumesTitle: t("Status.Volumes", localizedFallback("Громкости", "Volumes")),
+      nowPlayingHertzTitle: t("Status.Hertz", localizedFallback("Герцы", "Hertz")),
+      nowPlayingSpeedsTitle: t("Status.Speeds", localizedFallback("Скорости", "Speeds")),
+      nowPlayingClipTitle: t("Common.Clip", "Clip"),
+      nowPlayingProgressTitle: t("Status.Progress", localizedFallback("Прогресс", "Progress")),
       managerSections: {
         normalization: Boolean(managerSectionState.normalization),
         files: Boolean(managerSectionState.files),
@@ -6361,6 +7017,9 @@ class TsDjMusicApp extends Application {
         case "create-file":
           await this.#createOrEditFile();
           break;
+        case "create-tracks-from-file":
+          await this.#createTracksFromFile(id);
+          break;
         case "edit-file":
           await this.#createOrEditFile(id);
           break;
@@ -6391,6 +7050,12 @@ class TsDjMusicApp extends Application {
           break;
         case "create-track-folder":
           await this.#createTrackFolder();
+          break;
+        case "edit-track-root-folder":
+          await this.#editTrackRootFolder();
+          break;
+        case "edit-track-folder":
+          await this.#editTrackFolder(id);
           break;
         case "toggle-track-folder":
           await this.#toggleTrackFolderCollapsed(id);
@@ -6484,7 +7149,8 @@ class TsDjMusicApp extends Application {
         }
         case "scan-normalization-tracks": {
           const channel = event.currentTarget.dataset.channel ?? "music";
-          await scanNormalizationTracks(channel);
+          const profileId = event.currentTarget.dataset.normalizationScanProfile ?? DEFAULT_NORMALIZATION_SCAN_PROFILE;
+          await scanNormalizationTracks(channel, profileId);
           break;
         }
         case "export-settings":
@@ -6540,6 +7206,12 @@ class TsDjMusicApp extends Application {
         case "create-ambience-track-folder":
           await this.#createAmbienceTrackFolder();
           break;
+        case "edit-ambience-track-root-folder":
+          await this.#editAmbienceTrackRootFolder();
+          break;
+        case "edit-ambience-track-folder":
+          await this.#editAmbienceTrackFolder(id);
+          break;
         case "toggle-ambience-track-folder":
           await this.#toggleAmbienceTrackFolderCollapsed(id);
           break;
@@ -6593,6 +7265,22 @@ class TsDjMusicApp extends Application {
       }
     });
 
+    html.on("click", "[data-now-playing-progress-bar]", async (event) => {
+      if (event.button !== 0) return;
+      const progressBar = event.currentTarget;
+      if (!(progressBar instanceof HTMLElement)) return;
+
+      const seekState = getCurrentPlaybackSeekState();
+      if (!seekState?.canSeek) return;
+
+      const bounds = progressBar.getBoundingClientRect();
+      if (!Number.isFinite(bounds.width) || bounds.width <= 0) return;
+
+      const ratio = clampNumber((event.clientX - bounds.left) / bounds.width, 0, 1);
+      const targetTime = seekState.clipStart + ((seekState.clipEnd - seekState.clipStart) * ratio);
+      await seekCurrentPlayback(targetTime);
+    });
+
     html.on("input", "[data-action='set-live-rate']", async (event) => {
       const rate = normalizeRate(Number(event.currentTarget.value));
       event.currentTarget.value = String(rate);
@@ -6630,18 +7318,7 @@ class TsDjMusicApp extends Application {
   }
 
   #getCurrentLabel(tracks, playlists) {
-    if (!playbackState.current) return t("Status.Stopped", "Stopped");
-
-    const currentTrack = tracks.find((track) => track.id === playbackState.current.trackId);
-    if (playbackState.current.mode === "playlist") {
-      const playlist = playlists.find((entry) => entry.id === playbackState.current.playlistId);
-      return tf("Status.ManagerPlaylist", {
-        playlist: playlist?.name ?? "?",
-        track: currentTrack?.name ?? "?",
-      }, ({ playlist: currentPlaylist, track }) => `Playlist: ${currentPlaylist} | Track: ${track}`);
-    }
-
-    return tf("Status.ManagerTrack", { track: currentTrack?.name ?? "?" }, ({ track }) => `Track: ${track}`);
+    return getCurrentPlaybackLabelForManager(tracks, playlists);
   }
   async refreshStorageCards(cardIds = Object.values(MANAGER_CARD_IDS)) {
     if (!this.rendered) return;
@@ -6703,6 +7380,51 @@ class TsDjMusicApp extends Application {
       MANAGER_CARD_IDS.musicTracks,
       MANAGER_CARD_IDS.ambienceTracks,
     ]);
+  }
+
+  async #createTracksFromFile(fileId) {
+    if (!fileId) return;
+    const file = getFiles().find((entry) => entry.id === fileId);
+    if (!file) return;
+
+    const parsedEntries = await promptBulkTrackImportData(file);
+    if (!parsedEntries) return;
+    if (!parsedEntries.length) {
+      notify("warn", "NeedTracks", {}, "No valid track rows were found.");
+      return;
+    }
+
+    const folderName = untitledName(getDefaultNameFromFileEntry(file));
+    const tracks = getTracks();
+    const folders = getTrackFolders();
+    const existingFolder = folders.find((entry) => String(entry.name ?? "").trim().toLowerCase() === folderName.toLowerCase());
+    const folderId = existingFolder?.id ?? foundry.utils.randomID();
+    const nextFolders = existingFolder
+      ? folders
+      : [...folders, { ...createTrackFolderEntry(folderName), id: folderId, name: folderName }];
+
+    const nextTracks = [
+      ...tracks,
+      ...parsedEntries.map((entry) => ({
+        id: foundry.utils.randomID(),
+        name: entry.name,
+        fileId,
+        folderId,
+        start: entry.start,
+        end: entry.end,
+        rate: 1,
+        normalize: true,
+        loop: false,
+      })),
+    ];
+
+    await setStorageData({
+      tracks: nextTracks,
+      trackFolders: nextFolders,
+    });
+    await this.#refreshCards([MANAGER_CARD_IDS.files, MANAGER_CARD_IDS.musicTracks]);
+
+    notify("info", "TracksCreated", { count: parsedEntries.length }, ({ count }) => `Created ${count} tracks.`);
   }
 
   async #deleteFile(fileId) {
@@ -6860,6 +7582,30 @@ class TsDjMusicApp extends Application {
     await this.#refreshCards([MANAGER_CARD_IDS.musicTracks]);
   }
 
+  async #editTrackRootFolder() {
+    const name = await promptPlaylistFolderName(getTrackRootName(), { allowEmpty: true });
+    if (name === null) return;
+    await setTrackRootName(name);
+    await this.#refreshCards([MANAGER_CARD_IDS.musicTracks]);
+  }
+
+  async #editTrackFolder(folderId) {
+    if (!folderId) return;
+    const folders = getTrackFolders();
+    const folderIndex = folders.findIndex((entry) => entry.id === folderId);
+    if (folderIndex === -1) return;
+
+    const name = await promptPlaylistFolderName(folders[folderIndex].name);
+    if (!name) return;
+
+    folders[folderIndex] = {
+      ...folders[folderIndex],
+      name,
+    };
+    await setTrackFolders(folders);
+    await this.#refreshCards([MANAGER_CARD_IDS.musicTracks]);
+  }
+
   async #toggleTrackFolderCollapsed(folderId) {
     if (!folderId) return;
     const folders = getTrackFolders();
@@ -6996,7 +7742,7 @@ class TsDjMusicApp extends Application {
     const playlists = getPlaylists();
     const current = playlistId ? playlists.find((entry) => entry.id === playlistId) : null;
 
-    const payload = await promptPlaylistData(current, tracks, folders);
+    const payload = await promptPlaylistData(current, tracks, folders, getTrackRootName());
     if (!payload) return;
 
     if (current) {
@@ -7221,6 +7967,30 @@ class TsDjMusicApp extends Application {
     await this.#refreshCards([MANAGER_CARD_IDS.ambienceTracks]);
   }
 
+  async #editAmbienceTrackRootFolder() {
+    const name = await promptPlaylistFolderName(getAmbienceTrackRootName(), { allowEmpty: true });
+    if (name === null) return;
+    await setAmbienceTrackRootName(name);
+    await this.#refreshCards([MANAGER_CARD_IDS.ambienceTracks]);
+  }
+
+  async #editAmbienceTrackFolder(folderId) {
+    if (!folderId) return;
+    const folders = getAmbienceTrackFolders();
+    const folderIndex = folders.findIndex((entry) => entry.id === folderId);
+    if (folderIndex === -1) return;
+
+    const name = await promptPlaylistFolderName(folders[folderIndex].name);
+    if (!name) return;
+
+    folders[folderIndex] = {
+      ...folders[folderIndex],
+      name,
+    };
+    await setAmbienceTrackFolders(folders);
+    await this.#refreshCards([MANAGER_CARD_IDS.ambienceTracks]);
+  }
+
   async #toggleAmbienceTrackFolderCollapsed(folderId) {
     if (!folderId) return;
     const folders = getAmbienceTrackFolders();
@@ -7351,7 +8121,7 @@ class TsDjMusicApp extends Application {
     const folders = getAmbienceTrackFolders();
     const playlists = getAmbiencePlaylists();
     const current = playlistId ? playlists.find((entry) => entry.id === playlistId) : null;
-    const payload = await promptPlaylistData(current, tracks, folders);
+    const payload = await promptPlaylistData(current, tracks, folders, getAmbienceTrackRootName());
     if (!payload) return;
 
     if (current) {
@@ -7495,7 +8265,7 @@ async function promptFileData(current = null) {
   };
 }
 
-async function promptPlaylistFolderName(currentName = "") {
+async function promptPlaylistFolderName(currentName = "", { allowEmpty = false } = {}) {
   const content = `
     <form class="standard-form ts-dj-dialog-form">
       <div class="form-group">
@@ -7511,11 +8281,41 @@ async function promptPlaylistFolderName(currentName = "") {
   if (!result) return null;
 
   const name = String(result.name ?? "").trim();
-  if (!name) {
+  if (!name && !allowEmpty) {
     notify("warn", "NeedFolderName", {}, "You must specify a folder name.");
     return null;
   }
   return name;
+}
+
+async function promptBulkTrackImportData(file) {
+  const fileName = untitledName(getDefaultNameFromFileEntry(file));
+  const content = `
+    <form class="standard-form ts-dj-dialog-form">
+      <div class="form-group stacked">
+        <label>${escapeHtml(localizedFallback("Список треков", "Track list"))}</label>
+        <div class="form-fields" style="display:block">
+          <p class="notes">${escapeHtml(localizedFallback(
+            "Вставьте строки вида: 0:00 Название. Треки будут созданы в папку с именем файла.",
+            "Paste lines like: 0:00 Title. Tracks will be created in a folder named after the file."
+          ))}</p>
+          <textarea name="trackList" rows="16" placeholder="${escapeHtml("0:00 Intro\n2:57 Battle Theme")}"></textarea>
+        </div>
+      </div>
+    </form>
+  `;
+
+  const result = await promptDialog(
+    localizedFallback(`Создать треки | ${fileName}`, `Create tracks | ${fileName}`),
+    content,
+    {
+      confirmLabel: localizedFallback("Создать треки", "Create tracks"),
+      confirmIcon: "fa-music",
+    }
+  );
+  if (!result) return null;
+
+  return parseBulkTrackList(String(result.trackList ?? ""), file);
 }
 
 async function promptTrackData(current, files) {
@@ -7740,6 +8540,56 @@ function getDefaultNameFromFileEntry(file) {
   return getPathBaseName(file.path);
 }
 
+async function parseBulkTrackList(input, file = null) {
+  const lines = String(input ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const parsed = [];
+
+  for (const line of lines) {
+    const match = line.match(/^(\d+(?::\d{2}){1,2})\s+(.+)$/);
+    if (!match) continue;
+
+    const startSeconds = parseTimeInput(match[1]);
+    const name = String(match[2] ?? "").trim();
+    if (!Number.isFinite(startSeconds) || !name) continue;
+
+    parsed.push({
+      startSeconds,
+      name,
+    });
+  }
+
+  let fileDuration = null;
+  const filePath = String(file?.path ?? "").trim();
+  if (filePath) {
+    try {
+      const sound = await preloadSoundWithFileCache(filePath, { channel: "music" });
+      const duration = getSoundDuration(sound);
+      if (Number.isFinite(duration) && duration > 0) {
+        fileDuration = duration;
+      }
+    } catch (_error) {
+      // Ignore and keep the last end empty if metadata cannot be loaded.
+    }
+  }
+
+  return parsed.map((entry, index) => {
+    const next = parsed[index + 1];
+    const clipStart = Math.max(0, entry.startSeconds + 1);
+    const clipEnd = Number.isFinite(next?.startSeconds)
+      ? Math.max(0, next.startSeconds - 1)
+      : (Number.isFinite(fileDuration) ? fileDuration : null);
+    const hasEnd = Number.isFinite(clipEnd) && clipEnd > clipStart;
+    return {
+      name: entry.name,
+      start: formatDurationClock(clipStart),
+      end: hasEnd ? formatDurationClock(clipEnd) : "",
+    };
+  });
+}
+
 function getPathBaseName(path) {
   const raw = String(path ?? "").trim();
   if (!raw) return "";
@@ -7773,12 +8623,12 @@ function decodePathForDisplay(path) {
     .join("");
 }
 
-async function promptPlaylistData(current, tracks, folders = []) {
+async function promptPlaylistData(current, tracks, folders = [], rootName = "") {
   const currentPlaylist = current ? normalizeMusicPlaylistEntry(current) : null;
   const currentSelectedTrackIds = currentPlaylist ? getMusicPlaylistOrderedTrackIds(currentPlaylist) : [];
   const hasFolders = Boolean(currentPlaylist?.folders?.length);
   const checked = new Set(currentSelectedTrackIds);
-  const dialogGroups = getPlaylistTrackGroupsForEditor(tracks, folders, currentSelectedTrackIds);
+  const dialogGroups = getPlaylistTrackGroupsForEditor(tracks, folders, currentSelectedTrackIds, rootName);
 
   const trackCheckboxes = dialogGroups.length
     ? dialogGroups
@@ -8563,6 +9413,13 @@ function updateSidebarProgressUi() {
   label.textContent = progress.label;
 }
 
+function updateManagerProgressUi() {
+  if (!appInstance?.rendered) return;
+  const root = appInstance.element?.[0];
+  if (!(root instanceof HTMLElement)) return;
+  syncManagerNowPlayingUi(root, getManagerNowPlayingDetails(getTracks(), getPlaylists(), getFiles()));
+}
+
 function startSidebarProgressTicker() {
   if (sidebarProgressTicker) return;
   sidebarProgressTicker = window.setInterval(() => {
@@ -8572,6 +9429,7 @@ function startSidebarProgressTicker() {
     }
     if (playbackState.current.paused) return;
     updateSidebarProgressUi();
+    updateManagerProgressUi();
   }, 1000);
 }
 
@@ -8636,3 +9494,4 @@ async function playSoundWithRetry(sound, playOptions) {
 function waitMs(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
+

@@ -16,22 +16,76 @@
         <input type="range" min="0" max="1" step="0.05" value="{{liveAmbienceVolume}}" data-action="set-live-ambience-volume">
         <span class="ts-dj-live-ambience-volume-value ts-dj-live-control-value">{{liveAmbienceVolumeLabel}}</span>
       </div>
-      <label class="ts-dj-ambience-toggle">
+    </div>
+    <div class="ts-dj-status ts-dj-toolbar-side">
+      <div class="ts-dj-settings-actions ts-dj-toolbar-actions">
+        <button type="button" data-action="import-settings"><i class="fas fa-file-import"></i> {{localize "TS_DJ_MUSIC.Common.Import"}}</button>
+        <button type="button" data-action="export-settings"><i class="fas fa-file-export"></i> {{localize "TS_DJ_MUSIC.Common.Export"}}</button>
+        <button type="button" class="ts-dj-icon-button" data-action="reset-module-settings" title="{{localize "TS_DJ_MUSIC.Dialogs.ResetSettingsTitle"}}" aria-label="{{localize "TS_DJ_MUSIC.Dialogs.ResetSettingsTitle"}}"><i class="fas fa-trash"></i></button>
+      </div>
+      <label class="ts-dj-ambience-toggle ts-dj-toolbar-toggle">
         <input type="checkbox" data-action="set-ambience-concurrency" {{#if ambienceAllowConcurrent}}checked{{/if}}>
         {{localize "TS_DJ_MUSIC.App.AllowMultipleAmbience"}}
       </label>
     </div>
-    <div class="ts-dj-status">
-      <div class="ts-dj-settings-actions">
-        <button type="button" class="ts-dj-icon-button" data-action="reset-module-settings" title="{{localize "TS_DJ_MUSIC.Dialogs.ResetSettingsTitle"}}" aria-label="{{localize "TS_DJ_MUSIC.Dialogs.ResetSettingsTitle"}}"><i class="fas fa-trash"></i></button>
-        <button type="button" data-action="export-settings"><i class="fas fa-file-export"></i> {{localize "TS_DJ_MUSIC.Common.Export"}}</button>
-        <button type="button" data-action="import-settings"><i class="fas fa-file-import"></i> {{localize "TS_DJ_MUSIC.Common.Import"}}</button>
+    <details class="ts-dj-card ts-dj-card-collapse ts-dj-now-playing-card" data-card-key="nowPlaying" {{#if managerCards.nowPlaying.expanded}}open{{/if}}>
+      <summary>
+        <span class="ts-dj-card-summary-label">{{nowPlayingTitle}}</span>
+      </summary>
+      <div class="ts-dj-card-content">
+        <article class="ts-dj-now-playing {{#if nowPlaying.active}}is-active{{else}}is-idle{{/if}}" data-now-playing>
+          <header class="ts-dj-now-playing-header">
+            <div class="ts-dj-now-playing-heading">
+              <span class="ts-dj-now-playing-kicker">{{nowPlayingTitle}}</span>
+              <strong data-now-playing-title>{{nowPlaying.title}}</strong>
+              <span class="ts-dj-now-playing-summary" data-now-playing-summary>{{nowPlaying.summary}}</span>
+            </div>
+            <div class="ts-dj-now-playing-actions">
+              <span class="ts-dj-now-playing-state" data-now-playing-state>{{nowPlaying.stateLabel}}</span>
+              {{#if isPlaying}}
+              <button type="button" class="ts-dj-icon-button" data-action="stop" title="{{localize "TS_DJ_MUSIC.Common.Stop"}}" aria-label="{{localize "TS_DJ_MUSIC.Common.Stop"}}"><i class="fas fa-stop"></i></button>
+              {{/if}}
+            </div>
+          </header>
+          <div class="ts-dj-now-playing-context" data-now-playing-context>{{nowPlaying.context}}</div>
+          <div class="ts-dj-now-playing-source">
+            <span class="ts-dj-now-playing-meta-label">{{nowPlayingSourceTitle}}</span>
+            <strong data-now-playing-source-name>{{nowPlaying.sourceName}}</strong>
+            <span data-now-playing-source-path>{{nowPlaying.sourcePath}}</span>
+          </div>
+          <div class="ts-dj-now-playing-stats">
+            <div class="ts-dj-now-playing-stat">
+              <span class="ts-dj-now-playing-meta-label">{{nowPlayingVolumesTitle}}</span>
+              <strong data-now-playing-volume-primary>{{nowPlaying.volumePrimary}}</strong>
+              <span data-now-playing-volume-secondary>{{nowPlaying.volumeSecondary}}</span>
+            </div>
+            <div class="ts-dj-now-playing-stat">
+              <span class="ts-dj-now-playing-meta-label">{{nowPlayingHertzTitle}}</span>
+              <strong data-now-playing-hertz-primary>{{nowPlaying.hertzPrimary}}</strong>
+              <span data-now-playing-hertz-secondary>{{nowPlaying.hertzSecondary}}</span>
+            </div>
+            <div class="ts-dj-now-playing-stat">
+              <span class="ts-dj-now-playing-meta-label">{{nowPlayingSpeedsTitle}}</span>
+              <strong data-now-playing-speed-primary>{{nowPlaying.speedPrimary}}</strong>
+              <span data-now-playing-speed-secondary>{{nowPlaying.speedSecondary}}</span>
+            </div>
+            <div class="ts-dj-now-playing-stat">
+              <span class="ts-dj-now-playing-meta-label">{{nowPlayingClipTitle}}</span>
+              <strong data-now-playing-clip>{{nowPlaying.clipLabel}}</strong>
+            </div>
+          </div>
+          <div class="ts-dj-now-playing-progress">
+            <div class="ts-dj-now-playing-progress-head">
+              <span class="ts-dj-now-playing-meta-label">{{nowPlayingProgressTitle}}</span>
+              <strong data-now-playing-progress-label>{{nowPlaying.progressLabel}}</strong>
+            </div>
+            <div class="ts-dj-now-playing-progress-bar {{#if nowPlaying.canSeek}}is-seekable{{/if}}" data-now-playing-progress-bar>
+              <span class="ts-dj-now-playing-progress-fill" data-now-playing-progress-fill style="width: {{nowPlaying.progressPercent}}%;"></span>
+            </div>
+          </div>
+        </article>
       </div>
-      <span>{{currentLabel}}</span>
-      {{#if isPlaying}}
-      <button type="button" class="ts-dj-icon-button" data-action="stop" title="{{localize "TS_DJ_MUSIC.Common.Stop"}}" aria-label="{{localize "TS_DJ_MUSIC.Common.Stop"}}"><i class="fas fa-stop"></i></button>
-      {{/if}}
-    </div>
+    </details>
   </section>
 
   <section class="ts-dj-sections">
@@ -44,29 +98,41 @@
           </header>
           <div class="ts-dj-section-body ts-dj-normalization-block">
             <div class="ts-dj-normalization-channel">
-              <div class="ts-dj-live-monitor-row ts-dj-live-monitor-row--manual">
-                <label data-normalization-label="music">{{musicAutoLevelLabel}}</label>
+              <div class="ts-dj-normalization-row" style="display:grid;grid-template-columns:max-content minmax(0,1fr) auto;align-items:center;column-gap:6px;row-gap:8px;">
+                <label class="ts-dj-normalization-label" data-normalization-label="music">{{musicAutoLevelLabel}}</label>
                 <span class="ts-dj-live-monitor-value" data-normalization-monitor="music">{{musicAutoLevelMonitor}}</span>
-                <input type="text" value="{{musicNormalizationInputValue}}" placeholder="1000" inputmode="decimal" autocomplete="off" data-normalization-input="music">
-                <span class="ts-dj-live-normalization-unit">mHz</span>
+                <div class="ts-dj-normalization-input-block" style="display:inline-flex;align-items:center;gap:6px;">
+                  <input type="text" value="{{musicNormalizationInputValue}}" placeholder="1000" inputmode="decimal" autocomplete="off" data-normalization-input="music">
+                  <span class="ts-dj-live-normalization-unit">mHz</span>
+                </div>
+              </div>
+              <div class="ts-dj-live-monitor-actions ts-dj-live-monitor-actions--stacked">
                 <button type="button" data-action="apply-manual-normalization" data-channel="music">{{normalizationSetLabel}}</button>
                 <button type="button" data-action="reset-manual-normalization" data-channel="music">{{normalizationResetLabel}}</button>
               </div>
-              <div class="ts-dj-live-monitor-row ts-dj-live-monitor-row--scan">
-                <button type="button" data-action="scan-normalization-tracks" data-channel="music" data-normalization-scan-button="music" {{#if musicNormalizationScanDisabled}}disabled{{/if}}>{{musicNormalizationScanLabel}}</button>
+              <div class="ts-dj-live-monitor-actions ts-dj-live-monitor-actions--stacked ts-dj-normalization-scan-actions">
+                {{#each musicNormalizationScanButtons}}
+                <button type="button" data-action="scan-normalization-tracks" data-channel="music" data-normalization-scan-button="music" data-normalization-scan-profile="{{mode}}" {{#if disabled}}disabled{{/if}}>{{label}}</button>
+                {{/each}}
               </div>
             </div>
             <div class="ts-dj-normalization-channel">
-              <div class="ts-dj-live-monitor-row ts-dj-live-monitor-row--manual">
-                <label data-normalization-label="ambience">{{ambienceAutoLevelLabel}}</label>
+              <div class="ts-dj-normalization-row" style="display:grid;grid-template-columns:max-content minmax(0,1fr) auto;align-items:center;column-gap:6px;row-gap:8px;">
+                <label class="ts-dj-normalization-label" data-normalization-label="ambience">{{ambienceAutoLevelLabel}}</label>
                 <span class="ts-dj-live-monitor-value" data-normalization-monitor="ambience">{{ambienceAutoLevelMonitor}}</span>
-                <input type="text" value="{{ambienceNormalizationInputValue}}" placeholder="1000" inputmode="decimal" autocomplete="off" data-normalization-input="ambience">
-                <span class="ts-dj-live-normalization-unit">mHz</span>
+                <div class="ts-dj-normalization-input-block" style="display:inline-flex;align-items:center;gap:6px;">
+                  <input type="text" value="{{ambienceNormalizationInputValue}}" placeholder="1000" inputmode="decimal" autocomplete="off" data-normalization-input="ambience">
+                  <span class="ts-dj-live-normalization-unit">mHz</span>
+                </div>
+              </div>
+              <div class="ts-dj-live-monitor-actions ts-dj-live-monitor-actions--stacked">
                 <button type="button" data-action="apply-manual-normalization" data-channel="ambience">{{normalizationSetLabel}}</button>
                 <button type="button" data-action="reset-manual-normalization" data-channel="ambience">{{normalizationResetLabel}}</button>
               </div>
-              <div class="ts-dj-live-monitor-row ts-dj-live-monitor-row--scan">
-                <button type="button" data-action="scan-normalization-tracks" data-channel="ambience" data-normalization-scan-button="ambience" {{#if ambienceNormalizationScanDisabled}}disabled{{/if}}>{{ambienceNormalizationScanLabel}}</button>
+              <div class="ts-dj-live-monitor-actions ts-dj-live-monitor-actions--stacked ts-dj-normalization-scan-actions">
+                {{#each ambienceNormalizationScanButtons}}
+                <button type="button" data-action="scan-normalization-tracks" data-channel="ambience" data-normalization-scan-button="ambience" data-normalization-scan-profile="{{mode}}" {{#if disabled}}disabled{{/if}}>{{label}}</button>
+                {{/each}}
               </div>
             </div>
           </div>
@@ -94,6 +160,7 @@
                   <div class="meta">{{localize "TS_DJ_MUSIC.Common.Path"}}: {{path}}</div>
                 </div>
                 <div class="ts-dj-actions">
+                  <button type="button" class="ts-dj-text-action" data-action="create-tracks-from-file" data-id="{{id}}" title="Создать треки из списка" aria-label="Создать треки из списка">+♫</button>
                   <button type="button" data-action="edit-file" data-id="{{id}}" title="{{localize "TS_DJ_MUSIC.Common.Edit"}}" aria-label="{{localize "TS_DJ_MUSIC.Common.Edit"}}"><i class="fas fa-pen"></i></button>
                   <button type="button" data-action="delete-file" data-id="{{id}}" title="{{localize "TS_DJ_MUSIC.Common.Delete"}}" aria-label="{{localize "TS_DJ_MUSIC.Common.Delete"}}"><i class="fas fa-trash"></i></button>
                 </div>
@@ -188,8 +255,11 @@
                     <section class="ts-dj-track-folder ts-dj-track-folder-root {{#if musicRootCollapsed}}is-collapsed{{/if}}" data-manager-track-drop-zone data-track-kind="music" data-folder-id="">
                       <header class="ts-dj-track-folder-head">
                         <button type="button" class="ts-dj-icon-button" data-action="toggle-track-root-folder" title="{{#if musicRootCollapsed}}{{localize "TS_DJ_MUSIC.Common.ShowFolder"}}{{else}}{{localize "TS_DJ_MUSIC.Common.HideFolder"}}{{/if}}"><i class="fas {{#if musicRootCollapsed}}fa-chevron-right{{else}}fa-chevron-down{{/if}}"></i></button>
-                        <strong>{{localize "TS_DJ_MUSIC.Common.WithoutFolder"}}</strong>
+                        <strong>{{musicRootName}}</strong>
                         <span>{{musicRootTrackCount}} {{localize "TS_DJ_MUSIC.Common.TracksLower"}}</span>
+                        <div class="ts-dj-card-actions">
+                          <button type="button" class="ts-dj-icon-button" data-action="edit-track-root-folder" title="{{localize "TS_DJ_MUSIC.Common.Edit"}}" aria-label="{{localize "TS_DJ_MUSIC.Common.Edit"}}"><i class="fas fa-pen"></i></button>
+                        </div>
                       </header>
                       <div class="ts-dj-track-folder-body">
                         {{#each looseTracks}}
@@ -220,6 +290,7 @@
                         <span>{{trackCount}} {{localize "TS_DJ_MUSIC.Common.TracksLower"}}</span>
                         <div class="ts-dj-card-actions">
                           <button type="button" data-action="create-track" data-folder-id="{{id}}"><i class="fas fa-plus"></i> {{localize "TS_DJ_MUSIC.Common.New"}}</button>
+                          <button type="button" class="ts-dj-icon-button" data-action="edit-track-folder" data-id="{{id}}" title="{{localize "TS_DJ_MUSIC.Common.Edit"}}" aria-label="{{localize "TS_DJ_MUSIC.Common.Edit"}}"><i class="fas fa-pen"></i></button>
                           <button type="button" class="ts-dj-icon-button" data-action="delete-track-folder" data-id="{{id}}" title="{{localize "TS_DJ_MUSIC.Common.Delete"}}"><i class="fas fa-trash"></i></button>
                         </div>
                       </header>
@@ -336,8 +407,11 @@
                     <section class="ts-dj-track-folder ts-dj-track-folder-root {{#if ambienceRootCollapsed}}is-collapsed{{/if}}" data-manager-track-drop-zone data-track-kind="ambience" data-folder-id="">
                       <header class="ts-dj-track-folder-head">
                         <button type="button" class="ts-dj-icon-button" data-action="toggle-ambience-track-root-folder" title="{{#if ambienceRootCollapsed}}{{localize "TS_DJ_MUSIC.Common.ShowFolder"}}{{else}}{{localize "TS_DJ_MUSIC.Common.HideFolder"}}{{/if}}"><i class="fas {{#if ambienceRootCollapsed}}fa-chevron-right{{else}}fa-chevron-down{{/if}}"></i></button>
-                        <strong>{{localize "TS_DJ_MUSIC.Common.WithoutFolder"}}</strong>
+                        <strong>{{ambienceRootName}}</strong>
                         <span>{{ambienceRootTrackCount}} {{localize "TS_DJ_MUSIC.Common.TracksLower"}}</span>
+                        <div class="ts-dj-card-actions">
+                          <button type="button" class="ts-dj-icon-button" data-action="edit-ambience-track-root-folder" title="{{localize "TS_DJ_MUSIC.Common.Edit"}}" aria-label="{{localize "TS_DJ_MUSIC.Common.Edit"}}"><i class="fas fa-pen"></i></button>
+                        </div>
                       </header>
                       <div class="ts-dj-track-folder-body">
                         {{#each looseAmbienceTracks}}
@@ -368,6 +442,7 @@
                         <span>{{trackCount}} {{localize "TS_DJ_MUSIC.Common.TracksLower"}}</span>
                         <div class="ts-dj-card-actions">
                           <button type="button" data-action="create-ambience-track" data-folder-id="{{id}}"><i class="fas fa-plus"></i> {{localize "TS_DJ_MUSIC.Common.New"}}</button>
+                          <button type="button" class="ts-dj-icon-button" data-action="edit-ambience-track-folder" data-id="{{id}}" title="{{localize "TS_DJ_MUSIC.Common.Edit"}}" aria-label="{{localize "TS_DJ_MUSIC.Common.Edit"}}"><i class="fas fa-pen"></i></button>
                           <button type="button" class="ts-dj-icon-button" data-action="delete-ambience-track-folder" data-id="{{id}}" title="{{localize "TS_DJ_MUSIC.Common.Delete"}}"><i class="fas fa-trash"></i></button>
                         </div>
                       </header>

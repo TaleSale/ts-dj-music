@@ -141,6 +141,28 @@ function decodePathComponent(value) {
   }
 }
 
+function decodePathComponentForExport(value) {
+  const raw = decodeEscapedUnicode(value);
+  if (!raw) return "";
+
+  try {
+    const decoded = decodeURIComponent(raw);
+    return /[\/\\#?%]/.test(decoded) ? raw : decoded;
+  } catch (_error) {
+    return raw;
+  }
+}
+
+function serializePathForExport(path) {
+  const normalized = normalizePath(path);
+  if (!normalized) return "";
+
+  return normalized
+    .split("/")
+    .map((segment) => decodePathComponentForExport(segment))
+    .join("/");
+}
+
 function joinPath(left, right) {
   const a = normalizePath(left);
   const b = normalizePath(right);
@@ -236,6 +258,68 @@ function remapNormalizationCacheKey(rawKey, nextFilePath) {
   return parts.join("|");
 }
 
+function serializeNormalizationCacheKey(rawKey) {
+  const cacheKey = asString(rawKey);
+  if (!cacheKey) return "";
+
+  const parts = cacheKey.split("|");
+  if (parts.length < 7) return cacheKey;
+
+  parts[1] = serializePathForExport(parts[1]);
+  return parts.join("|");
+}
+
+function serializeNormalizationCacheStoreForExport(raw) {
+  const result = {};
+
+  for (const [key, value] of Object.entries(normalizeNormalizationCacheStore(raw))) {
+    result[serializeNormalizationCacheKey(key) || asString(key)] = value;
+  }
+
+  return result;
+}
+
+function prepareSettingsForExport(settings) {
+  const source = normalizeObject(settings);
+  const mapTrackForExport = (rawTrack) => {
+    const track = normalizeObject(rawTrack);
+    return {
+      ...track,
+      normalizationCacheKey: serializeNormalizationCacheKey(track.normalizationCacheKey),
+    };
+  };
+
+  return {
+    files: normalizeArray(source.files)
+      .map((rawFile) => {
+        const file = normalizeObject(rawFile);
+        const path = serializePathForExport(file.path);
+        if (!path) return null;
+
+        return {
+          ...file,
+          name: asString(file.name, getFileName(path)),
+          path,
+        };
+      })
+      .filter(Boolean),
+    tracks: normalizeArray(source.tracks).map((track) => mapTrackForExport(track)),
+    playlists: normalizeArray(source.playlists),
+    trackFolders: normalizeArray(source.trackFolders).map((entry) => normalizeTrackFolderEntry(entry)),
+    trackRootName: asString(source.trackRootName),
+    ambienceTracks: normalizeArray(source.ambienceTracks).map((track) => mapTrackForExport(track)),
+    ambiencePlaylists: normalizeArray(source.ambiencePlaylists),
+    ambienceTrackFolders: normalizeArray(source.ambienceTrackFolders).map((entry) => normalizeTrackFolderEntry(entry)),
+    ambienceTrackRootName: asString(source.ambienceTrackRootName),
+    ambienceAllowConcurrent: Boolean(source.ambienceAllowConcurrent),
+    normalizationCache: serializeNormalizationCacheStoreForExport(source.normalizationCache),
+    normalizationReferences: cloneNormalizationReferenceStore(source.normalizationReferences),
+    liveRate: normalizeRate(source.liveRate ?? 1),
+    liveMusicVolume: normalizeVolume(source.liveMusicVolume ?? 1),
+    liveAmbienceVolume: normalizeVolume(source.liveAmbienceVolume ?? 1),
+  };
+}
+
 function getImportedTrackNormalizationMetadata(track, nextFilePath) {
   const source = normalizeObject(track);
   const version = Number(source.normalizationAnalysisVersion);
@@ -255,6 +339,36 @@ function getImportedTrackNormalizationMetadata(track, nextFilePath) {
     normalizationCacheKey: cacheKey,
     normalizationLoudnessDb: loudnessDb,
   };
+}
+
+function collectImportedNormalizationCache(importedTracks, oldToNewFileId, filePathById = new Map(), importedCache = {}) {
+  const result = {};
+  const sourceCache = normalizeNormalizationCacheStore(importedCache);
+
+  for (const rawTrack of normalizeArray(importedTracks)) {
+    const track = normalizeObject(rawTrack);
+    const oldFileId = asString(track.fileId);
+    const mappedFileId = oldToNewFileId.get(oldFileId);
+    if (!mappedFileId) continue;
+
+    const nextFilePath = asString(filePathById.get(mappedFileId));
+    const remappedCacheKey = remapNormalizationCacheKey(track.normalizationCacheKey, nextFilePath);
+    if (!remappedCacheKey) continue;
+
+    const loudnessDb = Number(track.normalizationLoudnessDb);
+    if (Number.isFinite(loudnessDb)) {
+      result[remappedCacheKey] = loudnessDb;
+      continue;
+    }
+
+    const importedCacheKey = asString(track.normalizationCacheKey);
+    const cachedValue = Number(sourceCache[importedCacheKey]);
+    if (Number.isFinite(cachedValue)) {
+      result[remappedCacheKey] = cachedValue;
+    }
+  }
+
+  return result;
 }
 
 function updateImportProgress(label, pct = 0) {
@@ -303,9 +417,11 @@ function normalizeStorageData(raw) {
     tracks: normalizeArray(source.tracks),
     playlists: normalizeArray(source.playlists),
     trackFolders: normalizeArray(source.trackFolders).map((entry) => normalizeTrackFolderEntry(entry)),
+    trackRootName: asString(source.trackRootName),
     ambienceTracks: normalizeArray(source.ambienceTracks),
     ambiencePlaylists: normalizeArray(source.ambiencePlaylists),
     ambienceTrackFolders: normalizeArray(source.ambienceTrackFolders).map((entry) => normalizeTrackFolderEntry(entry)),
+    ambienceTrackRootName: asString(source.ambienceTrackRootName),
     ambienceAllowConcurrent: Boolean(source.ambienceAllowConcurrent),
     normalizationCache: normalizeNormalizationCacheStore(source.normalizationCache),
     normalizationReferences: normalizeNormalizationReferenceStore(source.normalizationReferences),
@@ -384,9 +500,11 @@ async function getCurrentSettingsSnapshot() {
     tracks: normalizeArray(game.settings.get(MODULE_ID, SETTING_KEYS.tracks)),
     playlists: normalizeArray(game.settings.get(MODULE_ID, SETTING_KEYS.playlists)),
     trackFolders: [],
+    trackRootName: "",
     ambienceTracks: normalizeArray(game.settings.get(MODULE_ID, SETTING_KEYS.ambienceTracks)),
     ambiencePlaylists: normalizeArray(game.settings.get(MODULE_ID, SETTING_KEYS.ambiencePlaylists)),
     ambienceTrackFolders: [],
+    ambienceTrackRootName: "",
     ambienceAllowConcurrent: Boolean(game.settings.get(MODULE_ID, SETTING_KEYS.ambienceAllowConcurrent)),
     normalizationCache: {},
     normalizationReferences: {
@@ -400,9 +518,11 @@ async function getCurrentSettingsSnapshot() {
     tracks: normalizeArray(store.tracks),
     playlists: normalizeArray(store.playlists),
     trackFolders: normalizeArray(store.trackFolders).map((entry) => normalizeTrackFolderEntry(entry)),
+    trackRootName: asString(store.trackRootName),
     ambienceTracks: normalizeArray(store.ambienceTracks),
     ambiencePlaylists: normalizeArray(store.ambiencePlaylists),
     ambienceTrackFolders: normalizeArray(store.ambienceTrackFolders).map((entry) => normalizeTrackFolderEntry(entry)),
+    ambienceTrackRootName: asString(store.ambienceTrackRootName),
     ambienceAllowConcurrent: Boolean(store.ambienceAllowConcurrent),
     normalizationCache: cloneNormalizationCacheStore(
       Object.keys(normalizeObject(store.normalizationCache)).length
@@ -429,9 +549,11 @@ function toImportShape(payload) {
     tracks: normalizeArray(data.tracks),
     playlists: normalizeArray(data.playlists),
     trackFolders: normalizeArray(data.trackFolders).map((entry) => normalizeTrackFolderEntry(entry)),
+    trackRootName: asString(data.trackRootName),
     ambienceTracks: normalizeArray(data.ambienceTracks),
     ambiencePlaylists: normalizeArray(data.ambiencePlaylists),
     ambienceTrackFolders: normalizeArray(data.ambienceTrackFolders).map((entry) => normalizeTrackFolderEntry(entry)),
+    ambienceTrackRootName: asString(data.ambienceTrackRootName),
     ambienceAllowConcurrent: Boolean(data.ambienceAllowConcurrent),
     normalizationCache: normalizeNormalizationCacheStore(data.normalizationCache),
     normalizationReferences: normalizeNormalizationReferenceStore(data.normalizationReferences),
@@ -465,7 +587,10 @@ function buildMusicPlaylistExportPayload(settings, playlistId) {
     return { ok: false, error: "not-found" };
   }
 
-  const playlistTrackIds = normalizeArray(playlist.trackIds)
+  const playlistTrackIds = [
+    ...normalizeArray(playlist.trackIds),
+    ...normalizeArray(playlist.folders).flatMap((folder) => normalizeArray(folder.trackIds)),
+  ]
     .map((trackId) => asString(trackId))
     .filter(Boolean);
   if (!playlistTrackIds.length) {
@@ -535,36 +660,51 @@ function buildMusicPlaylistExportPayload(settings, playlistId) {
   }));
 
   const validTrackIds = new Set(normalizedValidTracks.map((track) => asString(track.id)).filter(Boolean));
+  const exportedPlaylistFolders = normalizeArray(playlist.folders)
+    .map((folder) => normalizeObject(folder))
+    .map((folder) => ({
+      id: asString(folder.id, foundry.utils.randomID()),
+      name: asString(folder.name),
+      collapsed: Boolean(folder.collapsed),
+      trackIds: normalizeArray(folder.trackIds)
+        .map((trackId) => asString(trackId))
+        .filter((trackId) => validTrackIds.has(trackId)),
+    }));
   const exportedPlaylist = {
     id: asString(playlist.id, foundry.utils.randomID()),
     name: asString(playlist.name, t("Transfer.PlaylistFallback", "Playlist")),
     loop: Boolean(playlist.loop),
     shuffle: Boolean(playlist.shuffle),
-    trackIds: playlistTrackIds.filter((trackId) => validTrackIds.has(trackId)),
+    trackIds: normalizeArray(playlist.trackIds)
+      .map((trackId) => asString(trackId))
+      .filter((trackId) => validTrackIds.has(trackId)),
+    folders: exportedPlaylistFolders,
   };
 
-  if (!exportedPlaylist.trackIds.length) {
+  if (!exportedPlaylist.trackIds.length && !exportedPlaylist.folders.some((folder) => folder.trackIds.length > 0)) {
     return { ok: false, error: "empty" };
   }
 
   return {
     ok: true,
     playlist: exportedPlaylist,
-    settings: {
+    settings: prepareSettingsForExport({
       files,
       tracks: normalizedValidTracks,
       playlists: [exportedPlaylist],
       trackFolders,
+      trackRootName: "",
       ambienceTracks: [],
       ambiencePlaylists: [],
       ambienceTrackFolders: [],
+      ambienceTrackRootName: "",
       ambienceAllowConcurrent: false,
       normalizationCache: collectNormalizationCacheFromTracks(normalizedValidTracks),
       normalizationReferences: {
         music: null,
         ambience: null,
       },
-    },
+    }),
   };
 }
 
@@ -1521,6 +1661,31 @@ function remapImportedTrackFolderId(rawFolderId, oldToNewFolderId = new Map()) {
   return oldToNewFolderId.get(folderId) ?? "";
 }
 
+function normalizeImportedPlaylistFolders(importedFolders, oldToNewTrackId, usedTrackIds = new Set()) {
+  const folders = [];
+  const usedFolderIds = new Set();
+
+  for (const rawFolder of normalizeArray(importedFolders)) {
+    const folder = normalizeObject(rawFolder);
+    const trackIds = normalizeArray(folder.trackIds)
+      .map((trackId) => oldToNewTrackId.get(asString(trackId)))
+      .filter((trackId) => {
+        if (!trackId || usedTrackIds.has(trackId)) return false;
+        usedTrackIds.add(trackId);
+        return true;
+      });
+
+    folders.push({
+      id: uniqueId(asString(folder.id, foundry.utils.randomID()), usedFolderIds),
+      name: asString(folder.name),
+      collapsed: Boolean(folder.collapsed),
+      trackIds,
+    });
+  }
+
+  return folders;
+}
+
 function normalizeImportedPlaylistsForMerge(importedPlaylists, oldToNewTrackId, existingPlaylists = []) {
   const playlists = [];
   const usedIds = new Set(normalizeArray(existingPlaylists).map((playlist) => asString(playlist?.id)).filter(Boolean));
@@ -1528,11 +1693,17 @@ function normalizeImportedPlaylistsForMerge(importedPlaylists, oldToNewTrackId, 
 
   for (const rawPlaylist of normalizeArray(importedPlaylists)) {
     const playlist = normalizeObject(rawPlaylist);
+    const usedTrackIds = new Set();
+    const folders = normalizeImportedPlaylistFolders(playlist.folders, oldToNewTrackId, usedTrackIds);
     const trackIds = normalizeArray(playlist.trackIds)
       .map((trackId) => oldToNewTrackId.get(asString(trackId)))
-      .filter(Boolean);
+      .filter((trackId) => {
+        if (!trackId || usedTrackIds.has(trackId)) return false;
+        usedTrackIds.add(trackId);
+        return true;
+      });
 
-    if (!trackIds.length) {
+    if (!trackIds.length && !folders.some((folder) => folder.trackIds.length > 0)) {
       skipped += 1;
       continue;
     }
@@ -1543,6 +1714,7 @@ function normalizeImportedPlaylistsForMerge(importedPlaylists, oldToNewTrackId, 
       loop: Boolean(playlist.loop),
       shuffle: Boolean(playlist.shuffle),
       trackIds,
+      folders,
     });
   }
 
@@ -1551,7 +1723,13 @@ function normalizeImportedPlaylistsForMerge(importedPlaylists, oldToNewTrackId, 
 
 function filterTracksForImportedPlaylists(tracks, playlists) {
   const usedTrackIds = new Set(
-    normalizeArray(playlists).flatMap((playlist) => normalizeArray(playlist.trackIds).map((trackId) => asString(trackId))).filter(Boolean)
+    normalizeArray(playlists)
+      .flatMap((playlist) => [
+        ...normalizeArray(playlist.trackIds),
+        ...normalizeArray(playlist.folders).flatMap((folder) => normalizeArray(folder.trackIds)),
+      ])
+      .map((trackId) => asString(trackId))
+      .filter(Boolean)
   );
   if (!usedTrackIds.size) return [];
   return normalizeArray(tracks).filter((track) => usedTrackIds.has(asString(track?.id)));
@@ -1646,11 +1824,17 @@ function normalizeImportedPlaylists(importedPlaylists, oldToNewTrackId) {
 
   for (const rawPlaylist of normalizeArray(importedPlaylists)) {
     const playlist = normalizeObject(rawPlaylist);
+    const usedTrackIds = new Set();
+    const folders = normalizeImportedPlaylistFolders(playlist.folders, oldToNewTrackId, usedTrackIds);
     const trackIds = normalizeArray(playlist.trackIds)
       .map((id) => oldToNewTrackId.get(asString(id)))
-      .filter(Boolean);
+      .filter((trackId) => {
+        if (!trackId || usedTrackIds.has(trackId)) return false;
+        usedTrackIds.add(trackId);
+        return true;
+      });
 
-    if (trackIds.length === 0) {
+    if (trackIds.length === 0 && !folders.some((folder) => folder.trackIds.length > 0)) {
       skipped += 1;
       continue;
     }
@@ -1661,6 +1845,7 @@ function normalizeImportedPlaylists(importedPlaylists, oldToNewTrackId) {
       loop: Boolean(playlist.loop),
       shuffle: Boolean(playlist.shuffle),
       trackIds,
+      folders,
     });
   }
 
@@ -1682,7 +1867,8 @@ async function applyImportedSettings(payload) {
   const { playlists, skipped: skippedPlaylists } = normalizeImportedPlaylists(incoming.playlists, oldToNewTrackId);
   const { playlists: ambiencePlaylists, skipped: skippedAmbiencePlaylists } = normalizeImportedPlaylists(incoming.ambiencePlaylists, oldToNewAmbienceTrackId);
   const normalizationCache = cloneNormalizationCacheStore({
-    ...incoming.normalizationCache,
+    ...collectImportedNormalizationCache(incoming.tracks, oldToNewId, filePathById, incoming.normalizationCache),
+    ...collectImportedNormalizationCache(incoming.ambienceTracks, oldToNewId, filePathById, incoming.normalizationCache),
     ...collectNormalizationCacheFromTracks(tracks),
     ...collectNormalizationCacheFromTracks(ambienceTracks),
   });
@@ -1693,9 +1879,11 @@ async function applyImportedSettings(payload) {
     tracks,
     playlists,
     trackFolders,
+    trackRootName: asString(incoming.trackRootName),
     ambienceTracks,
     ambiencePlaylists,
     ambienceTrackFolders,
+    ambienceTrackRootName: asString(incoming.ambienceTrackRootName),
     ambienceAllowConcurrent: Boolean(incoming.ambienceAllowConcurrent),
     normalizationCache,
     normalizationReferences: incoming.normalizationReferences,
@@ -1733,6 +1921,7 @@ async function applyImportedMusicPlaylist(incoming) {
   const referencedTrackFolders = filterTrackFoldersForImportedTracks(trackFolders, referencedTracks);
   const normalizationCache = cloneNormalizationCacheStore({
     ...current.normalizationCache,
+    ...collectImportedNormalizationCache(incoming.tracks, oldToNewId, filePathById, incoming.normalizationCache),
     ...collectNormalizationCacheFromTracks(referencedTracks),
   });
 
@@ -1756,9 +1945,11 @@ async function applyImportedMusicPlaylist(incoming) {
     tracks: [...normalizeArray(current.tracks), ...referencedTracks],
     playlists: [...normalizeArray(current.playlists), ...playlists],
     trackFolders: [...normalizeArray(current.trackFolders), ...referencedTrackFolders],
+    trackRootName: asString(current.trackRootName),
     ambienceTracks: normalizeArray(current.ambienceTracks),
     ambiencePlaylists: normalizeArray(current.ambiencePlaylists),
     ambienceTrackFolders: normalizeArray(current.ambienceTrackFolders),
+    ambienceTrackRootName: asString(current.ambienceTrackRootName),
     ambienceAllowConcurrent: Boolean(current.ambienceAllowConcurrent),
     normalizationCache,
     normalizationReferences: current.normalizationReferences,
@@ -1783,7 +1974,7 @@ export async function exportModuleSettings() {
     return false;
   }
 
-  const settings = await getCurrentSettingsSnapshot();
+  const settings = prepareSettingsForExport(await getCurrentSettingsSnapshot());
   const payload = {
     version: 1,
     moduleId: MODULE_ID,

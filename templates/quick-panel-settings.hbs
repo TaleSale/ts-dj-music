@@ -1,4 +1,29 @@
 <form class="ts-dj-quick-panel-settings-form">
+  {{#if groupedSettings}}
+  <div class="ts-dj-settings-group-list">
+    {{#each groupedSettings}}
+    <section class="ts-dj-settings-group {{#if hasChildren}}ts-dj-settings-group--nested{{/if}}">
+      <div class="form-group ts-dj-settings-item ts-dj-settings-item--parent">
+        <label>{{localize parent.nameKey}}</label>
+        <div class="form-fields">
+          <input type="checkbox" name="settings.{{parent.key}}" {{checked parent.value}}>
+        </div>
+        <p class="notes">{{localize parent.hintKey}}</p>
+      </div>
+
+      {{#each children}}
+      <div class="form-group ts-dj-settings-item ts-dj-settings-item--child">
+        <label>{{localize nameKey}}</label>
+        <div class="form-fields">
+          <input type="checkbox" name="settings.{{key}}" {{checked value}}>
+        </div>
+        <p class="notes">{{localize hintKey}}</p>
+      </div>
+      {{/each}}
+    </section>
+    {{/each}}
+  </div>
+  {{else}}
   {{#each settings}}
   <div class="form-group">
     <label>{{localize nameKey}}</label>
@@ -8,6 +33,7 @@
     <p class="notes">{{localize hintKey}}</p>
   </div>
   {{/each}}
+  {{/if}}
 
   <footer class="sheet-footer flexrow">
     <button type="submit">

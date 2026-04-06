@@ -1,0 +1,240 @@
+{
+  "version": 1,
+  "moduleId": "ts-dj-music",
+  "exportKind": "music-playlist",
+  "exportedAt": "2026-04-02T19:02:33.510Z",
+  "settings": {
+    "files": [
+      {
+        "id": "SC7JTWPVpwcIe179",
+        "name": "Echoes of the Underworld - An Epic Out of the Abyss Soundtrack by Travis Savoie 4.mp3",
+        "path": "music/Playlists/Echoes%20of%20the%20Underworld%20-%20An%20Epic%20Out%20of%20the%20Abyss%20Soundtrack%20by%20Travis%20Savoie%204.mp3"
+      }
+    ],
+    "tracks": [
+      {
+        "id": "VetV1S65P0pqIDdq",
+        "name": "Chants of the Abyss",
+        "fileId": "SC7JTWPVpwcIe179",
+        "folderId": "xg3T4dBjJdI76IE7",
+        "start": "00:01",
+        "end": "03:01",
+        "rate": 1,
+        "loop": false,
+        "normalize": true,
+        "normalizationAnalysisVersion": 11,
+        "normalizationCacheKey": "11|music/Playlists/Echoes%20of%20the%20Underworld%20-%20An%20Epic%20Out%20of%20the%20Abyss%20Soundtrack%20by%20Travis%20Savoie%204.mp3|1.000|181.000|0.5|3|1",
+        "normalizationLoudnessDb": -28.779166831388295
+      },
+      {
+        "id": "SEZ7iOSB6GbLNt2E",
+        "name": "City of Blades",
+        "fileId": "SC7JTWPVpwcIe179",
+        "folderId": "xg3T4dBjJdI76IE7",
+        "start": "11:44",
+        "end": "14:35",
+        "rate": 1,
+        "loop": false,
+        "normalize": true,
+        "normalizationAnalysisVersion": null,
+        "normalizationCacheKey": "",
+        "normalizationLoudnessDb": null
+      },
+      {
+        "id": "KhZeeLwPxKGVevCe",
+        "name": "Demonic Rage",
+        "fileId": "SC7JTWPVpwcIe179",
+        "folderId": "xg3T4dBjJdI76IE7",
+        "start": "34:47",
+        "end": "37:40",
+        "rate": 1,
+        "loop": false,
+        "normalize": true,
+        "normalizationAnalysisVersion": null,
+        "normalizationCacheKey": "",
+        "normalizationLoudnessDb": null
+      },
+      {
+        "id": "Yrd9hvKIVO0iUKG3",
+        "name": "Drums From the Deep",
+        "fileId": "SC7JTWPVpwcIe179",
+        "folderId": "xg3T4dBjJdI76IE7",
+        "start": "08:58",
+        "end": "11:40",
+        "rate": 1,
+        "loop": false,
+        "normalize": true,
+        "normalizationAnalysisVersion": null,
+        "normalizationCacheKey": "",
+        "normalizationLoudnessDb": null
+      },
+      {
+        "id": "nT1eqeLVWJSEqU9u",
+        "name": "Echoes From the Past",
+        "fileId": "SC7JTWPVpwcIe179",
+        "folderId": "xg3T4dBjJdI76IE7",
+        "start": "29:04",
+        "end": "31:52",
+        "rate": 1,
+        "loop": false,
+        "normalize": true,
+        "normalizationAnalysisVersion": null,
+        "normalizationCacheKey": "",
+        "normalizationLoudnessDb": null
+      },
+      {
+        "id": "hsuID7DQd0ib9Y0e",
+        "name": "Fetid wedding",
+        "fileId": "SC7JTWPVpwcIe179",
+        "folderId": "xg3T4dBjJdI76IE7",
+        "start": "31:56",
+        "end": "34:43",
+        "rate": 1,
+        "loop": false,
+        "normalize": true,
+        "normalizationAnalysisVersion": null,
+        "normalizationCacheKey": "",
+        "normalizationLoudnessDb": null
+      },
+      {
+        "id": "qrNTxfvPfuN4oh5T",
+        "name": "Ghastly Rehearsal",
+        "fileId": "SC7JTWPVpwcIe179",
+        "folderId": "xg3T4dBjJdI76IE7",
+        "start": "14:39",
+        "end": "17:25",
+        "rate": 1,
+        "loop": false,
+        "normalize": true,
+        "normalizationAnalysisVersion": null,
+        "normalizationCacheKey": "",
+        "normalizationLoudnessDb": null
+      },
+      {
+        "id": "edEu2MG7qGzMJdMf",
+        "name": "Honored Guests",
+        "fileId": "SC7JTWPVpwcIe179",
+        "folderId": "xg3T4dBjJdI76IE7",
+        "start": "26:17",
+        "end": "29:00",
+        "rate": 1,
+        "loop": false,
+        "normalize": true,
+        "normalizationAnalysisVersion": null,
+        "normalizationCacheKey": "",
+        "normalizationLoudnessDb": null
+      },
+      {
+        "id": "YApiX2y5kWa6greX",
+        "name": "Hunter and Hunted",
+        "fileId": "SC7JTWPVpwcIe179",
+        "folderId": "xg3T4dBjJdI76IE7",
+        "start": "17:29",
+        "end": "20:23",
+        "rate": 1,
+        "loop": false,
+        "normalize": true,
+        "normalizationAnalysisVersion": null,
+        "normalizationCacheKey": "",
+        "normalizationLoudnessDb": null
+      },
+      {
+        "id": "CjexeHZC5xKfMIru",
+        "name": "Into Darkness",
+        "fileId": "SC7JTWPVpwcIe179",
+        "folderId": "xg3T4dBjJdI76IE7",
+        "start": "05:56",
+        "end": "08:54",
+        "rate": 1,
+        "loop": false,
+        "normalize": true,
+        "normalizationAnalysisVersion": null,
+        "normalizationCacheKey": "",
+        "normalizationLoudnessDb": null
+      },
+      {
+        "id": "m5mFXOWDlkkLtVHz",
+        "name": "Jailbreak",
+        "fileId": "SC7JTWPVpwcIe179",
+        "folderId": "xg3T4dBjJdI76IE7",
+        "start": "03:05",
+        "end": "05:52",
+        "rate": 1,
+        "loop": false,
+        "normalize": true,
+        "normalizationAnalysisVersion": null,
+        "normalizationCacheKey": "",
+        "normalizationLoudnessDb": null
+      },
+      {
+        "id": "ujY0TQAKC2YgT7As",
+        "name": "Pudding King",
+        "fileId": "SC7JTWPVpwcIe179",
+        "folderId": "xg3T4dBjJdI76IE7",
+        "start": "23:11",
+        "end": "26:13",
+        "rate": 1,
+        "loop": false,
+        "normalize": true,
+        "normalizationAnalysisVersion": null,
+        "normalizationCacheKey": "",
+        "normalizationLoudnessDb": null
+      },
+      {
+        "id": "tl9r3EBXjnjPvVVR",
+        "name": "Seeking Refuge",
+        "fileId": "SC7JTWPVpwcIe179",
+        "folderId": "xg3T4dBjJdI76IE7",
+        "start": "20:27",
+        "end": "23:18",
+        "rate": 1,
+        "loop": false,
+        "normalize": true,
+        "normalizationAnalysisVersion": null,
+        "normalizationCacheKey": "",
+        "normalizationLoudnessDb": null
+      }
+    ],
+    "playlists": [
+      {
+        "id": "fluUWiLoJcEZSshU",
+        "name": "Исследование ЗК",
+        "loop": true,
+        "shuffle": true,
+        "trackIds": [
+          "VetV1S65P0pqIDdq",
+          "SEZ7iOSB6GbLNt2E",
+          "KhZeeLwPxKGVevCe",
+          "Yrd9hvKIVO0iUKG3",
+          "nT1eqeLVWJSEqU9u",
+          "hsuID7DQd0ib9Y0e",
+          "qrNTxfvPfuN4oh5T",
+          "edEu2MG7qGzMJdMf",
+          "YApiX2y5kWa6greX",
+          "CjexeHZC5xKfMIru",
+          "m5mFXOWDlkkLtVHz",
+          "ujY0TQAKC2YgT7As",
+          "tl9r3EBXjnjPvVVR"
+        ]
+      }
+    ],
+    "trackFolders": [
+      {
+        "id": "xg3T4dBjJdI76IE7",
+        "name": "Исследование",
+        "collapsed": false
+      }
+    ],
+    "ambienceTracks": [],
+    "ambiencePlaylists": [],
+    "ambienceTrackFolders": [],
+    "ambienceAllowConcurrent": false,
+    "normalizationCache": {
+      "11|music/Playlists/Echoes%20of%20the%20Underworld%20-%20An%20Epic%20Out%20of%20the%20Abyss%20Soundtrack%20by%20Travis%20Savoie%204.mp3|1.000|181.000|0.5|3|1": -28.779166831388295
+    },
+    "normalizationReferences": {
+      "music": null,
+      "ambience": null
+    }
+  }
+}
