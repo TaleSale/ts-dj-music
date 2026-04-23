@@ -90,6 +90,9 @@ const NORMALIZATION_BIND_MAX_WAIT_MS = 1500;
 const PRELOAD_NORMALIZATION_MAX_WAIT_MS = 8000;
 const PRELOAD_NORMALIZATION_RATE = 2;
 const NORMALIZATION_SCAN_WINDOW_SEC = 0.5;
+const NORMALIZATION_MEDIA_LOAD_TIMEOUT_MS = 20000;
+const NORMALIZATION_MEDIA_SEEK_TIMEOUT_MS = 8000;
+const NORMALIZATION_SCAN_WINDOW_GRACE_MS = 2500;
 const DEFAULT_NORMALIZATION_SCAN_PROFILE = "normal";
 const NORMALIZATION_SCAN_PROFILES = Object.freeze({
   shallow: Object.freeze({
@@ -794,6 +797,23 @@ function cloneNormalizationCacheStore(cacheStore = null) {
   return cloned;
 }
 
+function collectNormalizationCacheFromTracks(tracks = [], files = []) {
+  const fileMap = files instanceof Map
+    ? files
+    : new Map(normalizeArray(files).map((file) => [file?.id, file?.path ?? ""]));
+  const cache = {};
+
+  for (const track of normalizeArray(tracks)) {
+    const filePath = fileMap.get(track?.fileId) ?? "";
+    const cacheKey = String(track?.normalizationCacheKey ?? "");
+    const loudnessDb = getStoredTrackNormalizationLoudnessDb(track, filePath);
+    if (!cacheKey || !Number.isFinite(loudnessDb)) continue;
+    cache[cacheKey] = loudnessDb;
+  }
+
+  return cache;
+}
+
 function normalizeNormalizationReferenceStore(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
   return {
@@ -842,7 +862,12 @@ function hydrateTrackNormalizationMetadata(tracks = [], files = [], normalizatio
 function normalizeStorageData(raw) {
   const source = raw && typeof raw === "object" ? raw : {};
   const files = normalizeArray(source.files);
-  const normalizationCache = normalizeNormalizationCacheStore(source.normalizationCache);
+  const fileMap = new Map(files.map((file) => [file?.id, file?.path ?? ""]));
+  const normalizationCache = cloneNormalizationCacheStore({
+    ...normalizeNormalizationCacheStore(source.normalizationCache),
+    ...collectNormalizationCacheFromTracks(source.tracks, fileMap),
+    ...collectNormalizationCacheFromTracks(source.ambienceTracks, fileMap),
+  });
   const normalizationReferences = normalizeNormalizationReferenceStore(source.normalizationReferences);
   const trackFolders = normalizeArray(source.trackFolders).map((entry) => normalizeTrackFolderEntry(entry));
   const ambienceTrackFolders = normalizeArray(source.ambienceTrackFolders).map((entry) => normalizeTrackFolderEntry(entry));
@@ -1204,6 +1229,15 @@ function getNormalizationScanProfileLabel(profileId) {
   }
 }
 
+function getNormalizationScanProfileShortLabel(profileId) {
+  const label = String(getNormalizationScanProfileLabel(profileId) ?? "").trim();
+  const firstChar = Array.from(label)[0];
+  if (firstChar) return firstChar.toUpperCase();
+
+  const profile = getNormalizationScanProfile(profileId);
+  return String(profile.id ?? "?").slice(0, 1).toUpperCase() || "?";
+}
+
 function getNormalizationScanButtonLabel(channel, profileId = DEFAULT_NORMALIZATION_SCAN_PROFILE) {
   const channelKey = getNormalizationChannelKey(channel);
   const profile = getNormalizationScanProfile(profileId);
@@ -1224,8 +1258,78 @@ function getNormalizationScanButtons(channel) {
   return NORMALIZATION_SCAN_PROFILE_ORDER.map((profileId) => ({
     mode: profileId,
     label: getNormalizationScanButtonLabel(channelKey, profileId),
+    shortLabel: getNormalizationScanProfileShortLabel(profileId),
+    title: getNormalizationScanProfileLabel(profileId),
     disabled,
   }));
+}
+
+async function promptPlaylistNormalizationScanProfile({
+  channel = "music",
+  playlistName = "",
+} = {}) {
+  void channel;
+  const scopeName = untitledName(playlistName);
+  const getDialogProfileLabel = (profileId) => {
+    const profile = getNormalizationScanProfile(profileId);
+    switch (profile.id) {
+      case "shallow":
+        return t("Dialogs.PlaylistScanProfileShallow", "Shallow");
+      case "deep":
+        return t("Dialogs.PlaylistScanProfileDeep", "Deep");
+      default:
+        return t("Dialogs.PlaylistScanProfileNormal", "Normal");
+    }
+  };
+  const content = `
+    <div class="ts-dj-dialog-form">
+      <p>${escapeHtml(tf("Dialogs.PlaylistScanChooseProfile", { name: scopeName }, ({ name }) =>
+        `Choose a scan profile for playlist "${name}".`
+      ))}</p>
+    </div>
+  `;
+
+  return await new Promise((resolve) => {
+    let finished = false;
+    new Dialog({
+      title: t("Dialogs.PlaylistScanTitle", "TS-DJ-MUSIC | Playlist scan"),
+      content,
+      buttons: {
+        shallow: {
+          label: getDialogProfileLabel("shallow"),
+          callback: () => {
+            finished = true;
+            resolve("shallow");
+          },
+        },
+        normal: {
+          label: getDialogProfileLabel("normal"),
+          callback: () => {
+            finished = true;
+            resolve("normal");
+          },
+        },
+        deep: {
+          label: getDialogProfileLabel("deep"),
+          callback: () => {
+            finished = true;
+            resolve("deep");
+          },
+        },
+        cancel: {
+          label: t("Common.Cancel", "Cancel"),
+          callback: () => {
+            finished = true;
+            resolve(null);
+          },
+        },
+      },
+      default: "normal",
+      close: () => {
+        if (!finished) resolve(null);
+      },
+    }).render(true);
+  });
 }
 
 function getNormalizationScanButtonLabelLegacy(channel) {
@@ -2665,6 +2769,12 @@ function refreshManagerRuntimeUi() {
       disabled: isNormalizationScanRunning("ambience"),
     });
   }
+  syncManagerButtonControl(root, `[data-normalization-playlist-scan-trigger='music']`, {
+    disabled: isNormalizationScanRunning("music"),
+  });
+  syncManagerButtonControl(root, `[data-normalization-playlist-scan-trigger='ambience']`, {
+    disabled: isNormalizationScanRunning("ambience"),
+  });
   syncManagerRangeControl(root, "[data-action='set-live-music-volume']", ".ts-dj-live-music-volume-value", getLiveMusicVolume(), formatVolumePercent);
   syncManagerRangeControl(root, "[data-action='set-live-ambience-volume']", ".ts-dj-live-ambience-volume-value", getLiveAmbienceVolume(), formatVolumePercent);
 
@@ -2757,13 +2867,15 @@ function syncManagerButtonControl(root, selector, {
   label = null,
   disabled = null,
 } = {}) {
-  const button = root.querySelector(selector);
-  if (!(button instanceof HTMLButtonElement)) return;
-  if (label !== null) {
-    button.textContent = String(label);
-  }
-  if (disabled !== null) {
-    button.disabled = Boolean(disabled);
+  const buttons = Array.from(root.querySelectorAll(selector)).filter((button) => button instanceof HTMLButtonElement);
+  if (!buttons.length) return;
+  for (const button of buttons) {
+    if (label !== null) {
+      button.textContent = String(label);
+    }
+    if (disabled !== null) {
+      button.disabled = Boolean(disabled);
+    }
   }
 }
 
@@ -3554,7 +3666,7 @@ async function createNormalizationMediaAnalyzer(filePath, resources) {
   audio.load();
 
   await waitForNormalizationMediaState(audio, {
-    timeoutMs: 12000,
+    timeoutMs: NORMALIZATION_MEDIA_LOAD_TIMEOUT_MS,
     predicate: () => Number.isFinite(audio.duration) && audio.duration > 0,
     events: ["loadedmetadata", "durationchange", "loadeddata", "canplay"],
   });
@@ -3613,8 +3725,8 @@ async function seekNormalizationMediaElement(audio, timeSec) {
     audio.addEventListener("seeked", onSeeked);
     audio.addEventListener("error", onError);
     timeoutId = window.setTimeout(() => {
-      finish(() => reject(new Error(`Media seek timeout after 4000ms (${safeTarget.toFixed(3)}s)`)));
-    }, 4000);
+      finish(() => reject(new Error(`Media seek timeout after ${NORMALIZATION_MEDIA_SEEK_TIMEOUT_MS}ms (${safeTarget.toFixed(3)}s)`)));
+    }, NORMALIZATION_MEDIA_SEEK_TIMEOUT_MS);
 
     try {
       audio.currentTime = safeTarget;
@@ -3624,7 +3736,7 @@ async function seekNormalizationMediaElement(audio, timeSec) {
   });
 
   await waitForNormalizationMediaState(audio, {
-    timeoutMs: 4000,
+    timeoutMs: NORMALIZATION_MEDIA_SEEK_TIMEOUT_MS,
     predicate: () => audio.readyState >= (globalThis.HTMLMediaElement?.HAVE_CURRENT_DATA ?? 2),
     events: ["loadeddata", "canplay", "canplaythrough", "timeupdate"],
   });
@@ -3681,7 +3793,7 @@ async function analyzeNormalizationMediaWindow(analyzer, startSec, durationSec, 
   analyzer.audio.playbackRate = PRELOAD_NORMALIZATION_RATE;
   analyzer.audio.defaultPlaybackRate = PRELOAD_NORMALIZATION_RATE;
   const startedAtMs = Date.now();
-  const maxWallMs = ((windowDuration / PRELOAD_NORMALIZATION_RATE) * 1000) + 1200;
+  const maxWallMs = ((windowDuration / PRELOAD_NORMALIZATION_RATE) * 1000) + NORMALIZATION_SCAN_WINDOW_GRACE_MS;
   const frameAnalyses = [];
 
   try {
@@ -3804,10 +3916,152 @@ async function scanTrackNormalizationLoudness(track, filePath, {
   }
 }
 
-async function scanNormalizationTracks(channel, profileId = DEFAULT_NORMALIZATION_SCAN_PROFILE) {
+async function promptRetryFailedNormalizationTracks({
+  channel = "music",
+  profileId = DEFAULT_NORMALIZATION_SCAN_PROFILE,
+  failedTracks = [],
+  scopeLabel = "",
+} = {}) {
+  const tracks = normalizeArray(failedTracks)
+    .map((entry) => ({
+      id: String(entry?.id ?? "").trim(),
+      name: untitledName(entry?.name),
+      filePath: String(entry?.filePath ?? "").trim(),
+      error: String(entry?.error ?? "").trim(),
+    }))
+    .filter((entry) => entry.id);
+
+  if (!tracks.length) return false;
+
+  const profileLabel = getNormalizationScanProfileLabel(profileId);
+  const scopeText = String(scopeLabel ?? "").trim();
+  const previewItems = tracks.slice(0, 8).map((track) => {
+    const fileName = track.filePath ? getFileName(track.filePath) : "";
+    const errorText = track.error || t("Dialogs.RetryFailedNormalizationNoError", "no error text");
+    const suffix = fileName ? ` <span class="notes">(${escapeHtml(fileName)})</span>` : "";
+    return `<li><strong>${escapeHtml(track.name)}</strong>${suffix}<div class="notes">${escapeHtml(errorText)}</div></li>`;
+  }).join("");
+  const remainder = tracks.length > 8
+    ? `<p class="notes">${escapeHtml(tf("Dialogs.RetryFailedNormalizationMore", { count: tracks.length - 8 }, ({ count }) => `${count} more.`))}</p>`
+    : "";
+  const content = `
+    <div class="ts-dj-dialog-form">
+      <p>${escapeHtml(
+        scopeText
+          ? tf("Dialogs.RetryFailedNormalizationPromptWithScope", { profile: profileLabel, scope: scopeText }, ({ profile, scope }) => `The scan (${profile}) finished with errors in playlist "${scope}". Rescan only the failed tracks?`)
+          : tf("Dialogs.RetryFailedNormalizationPrompt", { profile: profileLabel }, ({ profile }) => `The scan (${profile}) finished with errors. Rescan only the failed tracks?`)
+      )}</p>
+      <ol>${previewItems}</ol>
+      ${remainder}
+    </div>
+  `;
+
+  return await new Promise((resolve) => {
+    let finished = false;
+    new Dialog({
+      title: t("Dialogs.RetryFailedNormalizationTitle", "TS-DJ-MUSIC | Rescan failed tracks"),
+      content,
+      buttons: {
+        retry: {
+          label: t("Dialogs.RetryFailedNormalizationButton", "Rescan"),
+          icon: "<i class='fas fa-rotate-right'></i>",
+          callback: () => {
+            finished = true;
+            resolve(true);
+          },
+        },
+        cancel: {
+          label: t("Common.Cancel", "Cancel"),
+          icon: "<i class='fas fa-times'></i>",
+          callback: () => {
+            finished = true;
+            resolve(false);
+          },
+        },
+      },
+      default: "retry",
+      close: () => {
+        if (!finished) resolve(false);
+      },
+    }).render(true);
+  });
+}
+
+function getNormalizationScanScopeSuffix(scopeLabel = "") {
+  const normalized = String(scopeLabel ?? "").trim();
+  if (!normalized) return "";
+  return tf("Notifications.NormalizationScopePlaylist", { name: normalized }, ({ name }) => ` | playlist: ${name}`);
+}
+
+function getNormalizationScanTrackIdsForPlaylist(channel, playlistId) {
+  const channelKey = getNormalizationChannelKey(channel);
+  const normalizedPlaylistId = String(playlistId ?? "").trim();
+  if (!normalizedPlaylistId) return [];
+
+  if (channelKey === "ambience") {
+    const playlist = getAmbiencePlaylists().find((entry) => entry.id === normalizedPlaylistId);
+    if (!playlist) return [];
+
+    const validTrackIds = new Set(getAmbienceTracks().map((track) => track.id));
+    return normalizeArray(playlist.trackIds)
+      .map((trackId) => String(trackId ?? "").trim())
+      .filter((trackId) => trackId && validTrackIds.has(trackId));
+  }
+
+  const playlist = getPlaylists().find((entry) => entry.id === normalizedPlaylistId);
+  if (!playlist) return [];
+
+  return getMusicPlaylistOrderedTrackIds(playlist, new Set(getTracks().map((track) => track.id)));
+}
+
+async function scanNormalizationTracks(channel, profileId = DEFAULT_NORMALIZATION_SCAN_PROFILE, {
+  trackIds = null,
+  scopeLabel = "",
+} = {}) {
   const channelKey = getNormalizationChannelKey(channel);
   if (normalizationScanState[channelKey]) return false;
   const profile = getNormalizationScanProfile(profileId);
+  const scopeSuffix = getNormalizationScanScopeSuffix(scopeLabel);
+  const selectedTrackIds = Array.isArray(trackIds)
+    ? new Set(trackIds.map((trackId) => String(trackId ?? "").trim()).filter(Boolean))
+    : null;
+  const scanDetails = {
+    scanned: [],
+    skipped: [],
+    failed: [],
+  };
+  const logScanSummary = ({ scanned = 0, skipped = 0, failed = 0 } = {}) => {
+    console.info(`${MODULE_ID} | normalization scan summary`, {
+      channel: channelKey,
+      profileId: profile.id,
+      scopeLabel: String(scopeLabel ?? "").trim(),
+      requestedTrackCount: selectedTrackIds?.size ?? null,
+      scanned,
+      skipped,
+      failed,
+      savedCacheEntries: Object.keys(exportCurrentNormalizationCacheStore()).length,
+      scannedTracks: scanDetails.scanned,
+      skippedTracks: scanDetails.skipped,
+      failedTracks: scanDetails.failed,
+    });
+  };
+  const buildSummaryText = ({ scanned = 0, skipped = 0, failed = 0 } = {}) => (
+    channelKey === "ambience"
+      ? localizedFallback(
+        `TS-DJ-MUSIC: скан эмбиенса завершён${scopeSuffix}. Успешно ${scanned}, пропущено ${skipped}, ошибок ${failed}.`,
+        `TS-DJ-MUSIC: ambience scan finished${scopeSuffix}. Scanned ${scanned}, skipped ${skipped}, failed ${failed}.`,
+      )
+      : localizedFallback(
+        `TS-DJ-MUSIC: скан музыки завершён${scopeSuffix}. Успешно ${scanned}, пропущено ${skipped}, ошибок ${failed}.`,
+        `TS-DJ-MUSIC: music scan finished${scopeSuffix}. Scanned ${scanned}, skipped ${skipped}, failed ${failed}.`,
+      )
+  );
+  const scanOutcome = {
+    ok: false,
+    summaryType: "info",
+    summaryText: "",
+    failedTracks: [],
+  };
 
   normalizationScanState[channelKey] = profile.id;
   refreshLiveControlsUi();
@@ -3821,129 +4075,169 @@ async function scanNormalizationTracks(channel, profileId = DEFAULT_NORMALIZATIO
         track,
         filePath: fileMap.get(track.fileId)?.path ?? "",
       }))
+      .filter(({ track }) => !selectedTrackIds || selectedTrackIds.has(String(track?.id ?? "").trim()))
       .filter(({ track, filePath }) => isTrackNormalizationEnabled(track) && filePath);
 
     if (!candidates.length) {
       ui.notifications.warn(
         channelKey === "ambience"
-          ? localizedFallback("TS-DJ-MUSIC: нет треков эмбиенса для сканирования нормализации.", "TS-DJ-MUSIC: no ambience tracks available for normalization scan.")
-          : localizedFallback("TS-DJ-MUSIC: нет музыкальных треков для сканирования нормализации.", "TS-DJ-MUSIC: no music tracks available for normalization scan."),
+          ? localizedFallback(`TS-DJ-MUSIC: нет треков эмбиенса для сканирования нормализации${scopeSuffix}.`, `TS-DJ-MUSIC: no ambience tracks available for normalization scan${scopeSuffix}.`)
+          : localizedFallback(`TS-DJ-MUSIC: нет музыкальных треков для сканирования нормализации${scopeSuffix}.`, `TS-DJ-MUSIC: no music tracks available for normalization scan${scopeSuffix}.`),
       );
-      return false;
-    }
+    } else {
+      let scanned = 0;
+      let skipped = 0;
+      let failed = 0;
+      let metadataUpdated = false;
+      const tracksByFile = new Map();
 
-    let scanned = 0;
-    let skipped = 0;
-    let failed = 0;
-    let metadataUpdated = false;
-    const tracksByFile = new Map();
-
-    for (const { track, filePath } of candidates) {
-      const cacheKey = getTrackNormalizationCacheKeyForProfile(track, filePath, profile.id);
-      const cachedLoudnessDb = Number(normalizationAnalysisCache.get(cacheKey));
-      if (Number.isFinite(cachedLoudnessDb)) {
-        updateTrackNormalizationMetadata(track, filePath, cachedLoudnessDb, {
-          channel: channelKey,
-          profileId: profile.id,
-        });
-        metadataUpdated = true;
-        skipped += 1;
-        continue;
-      }
-      const groupedTracks = tracksByFile.get(filePath) ?? [];
-      groupedTracks.push(track);
-      tracksByFile.set(filePath, groupedTracks);
-    }
-
-    if (!tracksByFile.size) {
-      if (metadataUpdated) {
-        if (channelKey === "ambience") {
-          await setAmbienceTracks(storageState.ambienceTracks);
-        } else {
-          await setTracks(storageState.tracks);
+      for (const { track, filePath } of candidates) {
+        const cacheKey = getTrackNormalizationCacheKeyForProfile(track, filePath, profile.id);
+        const cachedLoudnessDb = Number(normalizationAnalysisCache.get(cacheKey));
+        if (Number.isFinite(cachedLoudnessDb)) {
+          updateTrackNormalizationMetadata(track, filePath, cachedLoudnessDb, {
+            channel: channelKey,
+            profileId: profile.id,
+          });
+          scanDetails.skipped.push({
+            id: track?.id ?? "",
+            name: track?.name ?? getFileName(filePath),
+            filePath,
+            reason: "cache-hit",
+          });
+          metadataUpdated = true;
+          skipped += 1;
+          continue;
         }
+        const groupedTracks = tracksByFile.get(filePath) ?? [];
+        groupedTracks.push(track);
+        tracksByFile.set(filePath, groupedTracks);
       }
-      const summary = channelKey === "ambience"
-        ? localizedFallback(
-          `TS-DJ-MUSIC: скан эмбиенса завершён. Успешно ${scanned}, пропущено ${skipped}, ошибок ${failed}.`,
-          `TS-DJ-MUSIC: ambience scan finished. Scanned ${scanned}, skipped ${skipped}, failed ${failed}.`,
-        )
-        : localizedFallback(
-          `TS-DJ-MUSIC: скан музыки завершён. Успешно ${scanned}, пропущено ${skipped}, ошибок ${failed}.`,
-          `TS-DJ-MUSIC: music scan finished. Scanned ${scanned}, skipped ${skipped}, failed ${failed}.`,
-        );
-      ui.notifications.info?.(summary);
-      return true;
-    }
 
-    analysisResources = await createNormalizationAnalysisResources(channelKey);
-    for (const [filePath, tracks] of tracksByFile.entries()) {
-      let analyzer = null;
-      try {
-        analyzer = await createNormalizationMediaAnalyzer(filePath, analysisResources);
-        for (const track of tracks) {
+      if (!tracksByFile.size) {
+        if (metadataUpdated) {
+          if (channelKey === "ambience") {
+            await setAmbienceTracks(storageState.ambienceTracks);
+          } else {
+            await setTracks(storageState.tracks);
+          }
+        }
+      } else {
+        analysisResources = await createNormalizationAnalysisResources(channelKey);
+        for (const [filePath, tracks] of tracksByFile.entries()) {
+          let analyzer = null;
           try {
-            const loudnessDb = await scanTrackNormalizationLoudnessWithAnalyzer(track, filePath, analyzer, {
-              channel: channelKey,
-              profileId: profile.id,
-            });
-            if (Number.isFinite(loudnessDb)) {
-              scanned += 1;
-            } else {
-              skipped += 1;
+            analyzer = await createNormalizationMediaAnalyzer(filePath, analysisResources);
+            for (const track of tracks) {
+              try {
+                const loudnessDb = await scanTrackNormalizationLoudnessWithAnalyzer(track, filePath, analyzer, {
+                  channel: channelKey,
+                  profileId: profile.id,
+                });
+                if (Number.isFinite(loudnessDb)) {
+                  scanDetails.scanned.push({
+                    id: track?.id ?? "",
+                    name: track?.name ?? getFileName(filePath),
+                    filePath,
+                    loudnessDb,
+                  });
+                  scanned += 1;
+                } else {
+                  scanDetails.skipped.push({
+                    id: track?.id ?? "",
+                    name: track?.name ?? getFileName(filePath),
+                    filePath,
+                    reason: "empty-analysis",
+                  });
+                  skipped += 1;
+                }
+              } catch (error) {
+                scanDetails.failed.push({
+                  id: track?.id ?? "",
+                  name: track?.name ?? getFileName(filePath),
+                  filePath,
+                  error: String(error?.message ?? error),
+                });
+                failed += 1;
+                console.warn(`${MODULE_ID} | normalization scan failed`, {
+                  channel: channelKey,
+                  trackId: track?.id ?? null,
+                  trackName: track?.name ?? null,
+                  filePath,
+                  error,
+                });
+              }
+
+              await waitMs(0);
             }
           } catch (error) {
-            failed += 1;
+            for (const track of tracks) {
+              scanDetails.failed.push({
+                id: track?.id ?? "",
+                name: track?.name ?? getFileName(filePath),
+                filePath,
+                error: String(error?.message ?? error),
+              });
+            }
+            failed += tracks.length;
+            skipped += tracks.length;
             console.warn(`${MODULE_ID} | normalization scan failed`, {
               channel: channelKey,
-              trackId: track?.id ?? null,
-              trackName: track?.name ?? null,
+              trackId: null,
+              trackName: null,
               filePath,
               error,
             });
+          } finally {
+            cleanupNormalizationMediaAnalyzer(analyzer);
           }
-
-          await waitMs(0);
         }
-      } catch (error) {
-        failed += 1;
-        skipped += tracks.length;
-        console.warn(`${MODULE_ID} | normalization scan failed`, {
-          channel: channelKey,
-          trackId: null,
-          trackName: null,
-          filePath,
-          error,
-        });
-      } finally {
-        cleanupNormalizationMediaAnalyzer(analyzer);
-      }
-    }
 
-    if (scanned > 0 || metadataUpdated) {
-      if (channelKey === "ambience") {
-        await setAmbienceTracks(storageState.ambienceTracks);
-      } else {
-        await setTracks(storageState.tracks);
+        if (scanned > 0 || metadataUpdated) {
+          if (channelKey === "ambience") {
+            await setAmbienceTracks(storageState.ambienceTracks);
+          } else {
+            await setTracks(storageState.tracks);
+          }
+        }
       }
-    }
 
-    const summary = channelKey === "ambience"
-      ? localizedFallback(
-        `TS-DJ-MUSIC: скан эмбиенса завершён. Успешно ${scanned}, пропущено ${skipped}, ошибок ${failed}.`,
-        `TS-DJ-MUSIC: ambience scan finished. Scanned ${scanned}, skipped ${skipped}, failed ${failed}.`,
-      )
-      : localizedFallback(
-        `TS-DJ-MUSIC: скан музыки завершён. Успешно ${scanned}, пропущено ${skipped}, ошибок ${failed}.`,
-        `TS-DJ-MUSIC: music scan finished. Scanned ${scanned}, skipped ${skipped}, failed ${failed}.`,
+      logScanSummary({ scanned, skipped, failed });
+      scanOutcome.ok = failed === 0;
+      scanOutcome.summaryType = failed > 0 ? "warn" : "info";
+      scanOutcome.summaryText = buildSummaryText({ scanned, skipped, failed });
+      scanOutcome.failedTracks = Array.from(
+        new Map(
+          scanDetails.failed
+            .filter((track) => String(track?.id ?? "").trim())
+            .map((track) => [String(track.id).trim(), track])
+        ).values()
       );
-    ui.notifications[failed > 0 ? "warn" : "info"]?.(summary);
-    return failed === 0;
+      ui.notifications[scanOutcome.summaryType]?.(scanOutcome.summaryText);
+    }
   } finally {
     await disposeNormalizationAnalysisResources(analysisResources);
     normalizationScanState[channelKey] = null;
     refreshLiveControlsUi();
   }
+
+  if (scanOutcome.failedTracks.length > 0) {
+    const shouldRetry = await promptRetryFailedNormalizationTracks({
+      channel: channelKey,
+      profileId: profile.id,
+      failedTracks: scanOutcome.failedTracks,
+      scopeLabel,
+    });
+
+    if (shouldRetry) {
+      return await scanNormalizationTracks(channelKey, profile.id, {
+        trackIds: scanOutcome.failedTracks.map((track) => track.id),
+        scopeLabel,
+      });
+    }
+  }
+
+  return scanOutcome.ok;
 }
 
 function calculateNormalizationGain(channel, loudnessDb) {
@@ -6688,6 +6982,7 @@ class TsDjMusicApp extends Application {
         trackCount: validTrackIds.length,
         trackNames: trackNames || t("Common.Empty", "Empty"),
         trackEntries,
+        normalizationScanDisabled: isNormalizationScanRunning("music"),
         loop: Boolean(playlist.loop),
         shuffle: Boolean(playlist.shuffle),
         active,
@@ -6771,6 +7066,7 @@ class TsDjMusicApp extends Application {
         trackCount: validTrackIds.length,
         trackNames: trackNames || t("Common.Empty", "Empty"),
         trackEntries,
+        normalizationScanDisabled: isNormalizationScanRunning("ambience"),
         loop: Boolean(playlist.loop),
         shuffle: Boolean(playlist.shuffle),
         active,
@@ -7147,9 +7443,32 @@ class TsDjMusicApp extends Application {
           await resetManualNormalizationReference(channel);
           break;
         }
+        case "choose-playlist-normalization-scan": {
+          const channel = event.currentTarget.dataset.channel ?? "music";
+          const playlistId = String(event.currentTarget.dataset.playlistId ?? "").trim();
+          if (!playlistId) break;
+          const playlistList = getNormalizationChannelKey(channel) === "ambience"
+            ? getAmbiencePlaylists()
+            : getPlaylists();
+          const playlist = playlistList.find((entry) => entry.id === playlistId);
+          if (!playlist) break;
+
+          const profileId = await promptPlaylistNormalizationScanProfile({
+            channel,
+            playlistName: playlist.name,
+          });
+          if (!profileId) break;
+
+          await scanNormalizationTracks(channel, profileId, {
+            trackIds: getNormalizationScanTrackIdsForPlaylist(channel, playlistId),
+            scopeLabel: untitledName(playlist.name),
+          });
+          break;
+        }
         case "scan-normalization-tracks": {
           const channel = event.currentTarget.dataset.channel ?? "music";
           const profileId = event.currentTarget.dataset.normalizationScanProfile ?? DEFAULT_NORMALIZATION_SCAN_PROFILE;
+
           await scanNormalizationTracks(channel, profileId);
           break;
         }

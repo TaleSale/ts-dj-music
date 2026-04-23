@@ -2,7 +2,7 @@
   "id": "ts-dj-music",
   "title": "TS-DJ-MUSIC",
   "description": "DJ module for Foundry: 0.5-2.0 speed, track clips, playlists, and playback control.",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "socket": true,
   "compatibility": {
     "minimum": "13",

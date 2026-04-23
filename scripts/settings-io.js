@@ -325,10 +325,12 @@ function getImportedTrackNormalizationMetadata(track, nextFilePath) {
   const version = Number(source.normalizationAnalysisVersion);
   const loudnessDb = Number(source.normalizationLoudnessDb);
   const cacheKey = remapNormalizationCacheKey(source.normalizationCacheKey, nextFilePath);
+  const scanProfile = asString(source.normalizationScanProfile);
 
   if (!Number.isFinite(version) || !Number.isFinite(loudnessDb) || !cacheKey) {
     return {
       normalizationAnalysisVersion: null,
+      normalizationScanProfile: scanProfile,
       normalizationCacheKey: "",
       normalizationLoudnessDb: null,
     };
@@ -336,6 +338,7 @@ function getImportedTrackNormalizationMetadata(track, nextFilePath) {
 
   return {
     normalizationAnalysisVersion: version,
+    normalizationScanProfile: scanProfile,
     normalizationCacheKey: cacheKey,
     normalizationLoudnessDb: loudnessDb,
   };
@@ -623,6 +626,7 @@ function buildMusicPlaylistExportPayload(settings, playlistId) {
       loop: Boolean(track.loop),
       normalize: track.normalize !== false,
       normalizationAnalysisVersion: Number.isFinite(Number(track.normalizationAnalysisVersion)) ? Number(track.normalizationAnalysisVersion) : null,
+      normalizationScanProfile: asString(track.normalizationScanProfile),
       normalizationCacheKey: asString(track.normalizationCacheKey),
       normalizationLoudnessDb: Number.isFinite(Number(track.normalizationLoudnessDb)) ? Number(track.normalizationLoudnessDb) : null,
     });
@@ -1627,6 +1631,7 @@ function normalizeImportedTracksForMerge(importedTracks, oldToNewFileId, existin
       loop: Boolean(track.loop),
       normalize: track.normalize !== false,
       normalizationAnalysisVersion: normalizationMetadata.normalizationAnalysisVersion,
+      normalizationScanProfile: normalizationMetadata.normalizationScanProfile,
       normalizationCacheKey: normalizationMetadata.normalizationCacheKey,
       normalizationLoudnessDb: normalizationMetadata.normalizationLoudnessDb,
     });
@@ -1809,6 +1814,7 @@ function normalizeImportedTracks(importedTracks, oldToNewFileId, filePathById = 
       loop: Boolean(track.loop),
       normalize: track.normalize !== false,
       normalizationAnalysisVersion: normalizationMetadata.normalizationAnalysisVersion,
+      normalizationScanProfile: normalizationMetadata.normalizationScanProfile,
       normalizationCacheKey: normalizationMetadata.normalizationCacheKey,
       normalizationLoudnessDb: normalizationMetadata.normalizationLoudnessDb,
     });
