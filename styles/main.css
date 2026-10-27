@@ -1695,3 +1695,35 @@
     align-items: stretch;
   }
 }
+
+.ts-dj-journal-link[role="button"] {
+  display: inline;
+  padding: 1px 4px;
+  border: 1px solid var(--color-border-light-2, #999);
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ts-dj-journal-link[role="button"]:hover,
+.ts-dj-journal-link[role="button"]:focus-visible {
+  text-shadow: 0 0 6px var(--color-shadow-primary, #ff6400);
+}
+
+/* Repeat the current playlist cue until the GM advances manually. */
+.ts-dj-music-sidebar-row button.ts-dj-repeat-one {
+  position: relative;
+}
+
+.ts-dj-music-sidebar-row button.ts-dj-repeat-one .ts-dj-repeat-one-number {
+  position: absolute;
+  right: 1px;
+  bottom: 0;
+  font-family: sans-serif;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 10px;
+  color: inherit;
+  text-shadow: 0 0 2px var(--color-bg, #191919);
+  pointer-events: none;
+}

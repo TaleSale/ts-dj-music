@@ -1,4 +1,5 @@
-﻿import { exportModuleSettings, importModuleSettings, transferMusicPlaylist } from "./settings-io.js";
+﻿import { registerJournalLinks } from "./journal-links.js";
+import { exportModuleSettings, importModuleSettings, transferMusicPlaylist } from "./settings-io.js";
 const MODULE_ID = "ts-dj-music";
 
 const SETTING_KEYS = {
@@ -508,6 +509,8 @@ class WindowSettingsForm extends FormApplication {
 
 Hooks.once("init", () => {
   registerSettings();
+  registerJournalLinks({ getTracks, getAmbienceTracks, playTrack: playTrackById,
+    playPlaylist: playPlaylistById, playAmbience: playAmbienceById, canControl: ensureModuleControlAccess });
 });
 
 Hooks.once("ready", async () => {
@@ -1483,6 +1486,7 @@ async function reloadStorageStateFromPlaylist(playlist = null) {
 
   const raw = target.getFlag(MODULE_ID, STORAGE_FLAG_KEYS.dataStore);
   applyStorageData(raw);
+  await syncManualPlaylistPlayback();
   refreshPlaylistDirectoryUi();
 }
 
@@ -2244,6 +2248,10 @@ function injectPlaylistDirectoryDjPanel(root) {
           await togglePlaylistLoop(id);
           return;
         }
+        if (action === "toggle-playlist-manual" && id) {
+          await togglePlaylistManualAdvance(id);
+          return;
+        }
         if (action === "toggle-playlist-shuffle" && id) {
           await togglePlaylistShuffle(id);
           return;
@@ -2388,7 +2396,7 @@ function buildSidebarPlaylistsHtml(playlists, tracks) {
           const trackPlayAction = trackActive ? (current?.paused ? "resume-current" : "pause-current") : "play-playlist-from-track";
           const trackPlayIcon = trackActive && !current?.paused ? "fa-pause" : "fa-play";
           return `
-            <div class="${MODULE_ID}-sidebar-subrow ${trackActive ? "is-active" : ""}">
+            <div class="${MODULE_ID}-sidebar-subrow ${trackActive ? "is-active" : ""}" data-ts-dj-journal-track data-track-id="${trackId}" data-playlist-id="${playlist.id}" draggable="true">
               <button
                 type="button"
                 data-action="${trackPlayAction}"
@@ -2409,12 +2417,13 @@ function buildSidebarPlaylistsHtml(playlists, tracks) {
             <div class="row-actions">
               <button type="button" data-action="${playAction}" data-id="${playlist.id}" class="play"><i class="fas ${playIcon}"></i></button>
               <button type="button" data-action="toggle-playlist-loop" data-id="${playlist.id}" class="loop ${loopEnabled ? "is-on" : ""}" title="${escapeHtml(t("Common.Loop", "Loop"))}"><i class="fas fa-repeat"></i></button>
+              <button type="button" data-action="toggle-playlist-manual" data-id="${playlist.id}" class="loop ts-dj-repeat-one ${playlist.manualAdvance ? "is-on" : ""}" aria-pressed="${Boolean(playlist.manualAdvance)}" title="${escapeHtml(t("Common.ManualAdvance", "Manual advance"))}" aria-label="${escapeHtml(t("Common.ManualAdvance", "Manual advance"))}"><i class="fas fa-repeat" aria-hidden="true"></i><span class="ts-dj-repeat-one-number" aria-hidden="true">1</span></button>
               <button type="button" data-action="toggle-playlist-shuffle" data-id="${playlist.id}" class="shuffle ${shuffleEnabled ? "is-on" : ""}" title="${escapeHtml(t("Common.Shuffle", "Shuffle"))}"><i class="fas fa-random"></i></button>
               <button type="button" data-action="toggle-sidebar-playlist-expand" data-id="${playlist.id}" class="expand ${expanded ? "is-on" : ""}" title="${escapeHtml(t(expanded ? "Common.HideTracks" : "Common.ShowTracks", expanded ? "Hide tracks" : "Show tracks"))}"><i class="fas ${expanded ? "fa-chevron-down" : "fa-chevron-right"}"></i></button>
             </div>
             <div class="meta">
               <strong>${escapeHtml(untitledName(playlist.name))}</strong>
-              <span>${escapeHtml(formatSidebarPlaylistMeta(count, loopEnabled, shuffleEnabled))}</span>
+              <span>${escapeHtml(formatSidebarPlaylistMeta(count, loopEnabled, shuffleEnabled))}${playlist.manualAdvance ? ` | ${escapeHtml(t("Common.ManualAdvance", "Manual advance"))}` : ""}</span>
             </div>
           </div>
           <div class="${MODULE_ID}-sidebar-sublist ${expanded ? "is-open" : ""}">
@@ -4942,6 +4951,7 @@ function normalizeMusicPlaylistEntry(raw) {
     name: String(source.name ?? "").trim(),
     loop: Boolean(source.loop),
     shuffle: Boolean(source.shuffle),
+    manualAdvance: Boolean(source.manualAdvance),
     trackIds: rootTrackIds,
     folders,
   };
@@ -5353,6 +5363,7 @@ async function setTracks(tracks) {
 
 async function setPlaylists(playlists) {
   await setStorageValue("playlists", normalizeArray(playlists).map((entry) => normalizeMusicPlaylistEntry(entry)));
+  await syncManualPlaylistPlayback();
 }
 
 async function setTrackFolders(folders) {
@@ -5580,6 +5591,24 @@ async function togglePlaylistLoop(playlistId) {
     playbackState.current.playlistLoop = loopEnabled;
   }
 
+}
+
+async function syncManualPlaylistPlayback() {
+  const current = playbackState.current;
+  if (current?.mode !== "playlist") return;
+  const playlist = getPlaylists().find((entry) => entry.id === current.playlistId);
+  if (!playlist) return;
+  const enabled = Boolean(playlist.manualAdvance);
+  if (Boolean(current.manualAdvance) === enabled) return;
+  current.manualAdvance = enabled;
+  await updateCurrentPlaybackLoopMode(enabled);
+}
+
+async function togglePlaylistManualAdvance(playlistId) {
+  const playlists = getPlaylists().map((entry) => entry.id === playlistId
+    ? { ...entry, manualAdvance: !entry.manualAdvance } : entry);
+  if (!playlists.some((entry) => entry.id === playlistId)) return;
+  await setPlaylists(playlists);
 }
 
 async function togglePlaylistShuffle(playlistId) {
@@ -6148,7 +6177,9 @@ async function playTrack(track, options = {}) {
   let offset = Math.max(0, requestedOffset);
   const requestedClipEnd = parseTimeInput(track.end);
 
-  const loop = options.loopOverride ?? Boolean(track.loop);
+  // A manual playlist repeats its current cue until the GM selects the next one.
+  const manualAdvance = mode === "playlist" && Boolean(getPlaylists().find((entry) => entry.id === playlistId)?.manualAdvance);
+  const loop = manualAdvance || (options.loopOverride ?? Boolean(track.loop));
   const requestId = playbackState.requestId + 1;
   playbackState.requestId = requestId;
   playbackState.loading = true;
@@ -6246,6 +6277,7 @@ async function playTrack(track, options = {}) {
     playlistLoop,
     playlistShuffle,
     loopEnabled: loop,
+    manualAdvance,
     clipEnd,
     clipStart,
     clipMonitorId: null,
@@ -7410,6 +7442,10 @@ class TsDjMusicApp extends Application {
         }
         case "toggle-playlist-loop":
           await togglePlaylistLoop(id);
+          await this.#refreshCards([MANAGER_CARD_IDS.musicPlaylists]);
+          break;
+        case "toggle-playlist-manual":
+          await togglePlaylistManualAdvance(id);
           await this.#refreshCards([MANAGER_CARD_IDS.musicPlaylists]);
           break;
         case "toggle-playlist-shuffle":
@@ -9031,6 +9067,7 @@ async function promptPlaylistData(current, tracks, folders = [], rootName = "") 
     return {
       ...currentPlaylist,
       name,
+      manualAdvance: Boolean(current?.manualAdvance),
     };
   }
 
@@ -9047,6 +9084,7 @@ async function promptPlaylistData(current, tracks, folders = [], rootName = "") 
     name,
     loop: Boolean(current?.loop),
     shuffle: Boolean(current?.shuffle),
+    manualAdvance: Boolean(current?.manualAdvance),
     trackIds,
     folders: currentPlaylist?.folders ?? [],
   };

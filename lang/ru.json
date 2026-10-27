@@ -1,4 +1,4 @@
-﻿{
+{
   "TS_DJ_MUSIC": {
     "App": {
       "LiveSpeed": "Скорость (live)",
@@ -64,7 +64,8 @@
       "NewFolder": "Новая папка",
       "DragToPlaylist": "Перетащите, чтобы переместить или добавить в плейлист",
       "Yes": "Да",
-      "ImportExport": "Импорт/экспорт"
+      "ImportExport": "Импорт/экспорт",
+      "ManualAdvance": "Ручное переключение"
     },
     "Dialogs": {
       "DeleteAllAmbiencePlaylistsContent": "<p>Удалить все эмбиент-плейлисты?</p>",
@@ -130,7 +131,8 @@
       "TrackRateLabel": "Скорость по умолчанию",
       "TrackStartLabel": "Начало отрезка",
       "TrackStartPlaceholder": "00:03 или 3",
-      "TrackTitle": "Трек"
+      "TrackTitle": "Трек",
+      "ManualAdvanceHint": "Текущий трек повторяется до нажатия «Следующий». Настройка применяется при запуске воспроизведения."
     },
     "Notes": {
       "NoAmbiencePlaylistsYet": "Эмбиент-плейлистов пока нет.",
@@ -164,7 +166,8 @@
       "SettingsReset": "TS-DJ-MUSIC: настройки сброшены.",
       "StorageApplyFailed": "TS-DJ-MUSIC: не удалось применить изменения в Playlist-хранилище.",
       "TrackFileMissing": "TS-DJ-MUSIC: для трека не указан файл.",
-      "TrackNotFound": "TS-DJ-MUSIC: трек не найден."
+      "TrackNotFound": "TS-DJ-MUSIC: трек не найден.",
+      "JournalPlaybackFailed": "TS-DJ: не удалось запустить трек из журнала."
     },
     "Settings": {
       "AllowMultipleAmbience": "Разрешить несколько эмбиентов",

@@ -198,6 +198,7 @@
                           <div class="row-actions">
                             <button type="button" data-action="{{playAction}}" data-id="{{id}}" class="play"><i class="fas {{playIcon}}"></i></button>
                             <button type="button" data-action="toggle-playlist-loop" data-id="{{id}}" class="loop {{#if loop}}is-on{{/if}}" title="{{localize "TS_DJ_MUSIC.Common.Loop"}}"><i class="fas fa-repeat"></i></button>
+                            <button type="button" data-action="toggle-playlist-manual" data-id="{{id}}" class="loop ts-dj-repeat-one {{#if manualAdvance}}is-on{{/if}}" aria-pressed="{{#if manualAdvance}}true{{else}}false{{/if}}" title="{{localize "TS_DJ_MUSIC.Common.ManualAdvance"}}" aria-label="{{localize "TS_DJ_MUSIC.Common.ManualAdvance"}}"><i class="fas fa-repeat" aria-hidden="true"></i><span class="ts-dj-repeat-one-number" aria-hidden="true">1</span></button>
                             <button type="button" data-action="toggle-playlist-shuffle" data-id="{{id}}" class="shuffle {{#if shuffle}}is-on{{/if}}" title="{{localize "TS_DJ_MUSIC.Common.Shuffle"}}"><i class="fas fa-random"></i></button>
                             <button type="button" data-action="choose-playlist-normalization-scan" data-channel="music" data-playlist-id="{{id}}" data-normalization-playlist-scan-trigger="music" class="scan" title="{{localize "TS_DJ_MUSIC.Common.Normalization"}}" aria-label="{{localize "TS_DJ_MUSIC.Common.Normalization"}}" {{#if normalizationScanDisabled}}disabled{{/if}}><i class="fas fa-magnifying-glass"></i></button>
                             <button type="button" data-action="edit-playlist" data-id="{{id}}" class="edit" title="{{localize "TS_DJ_MUSIC.Common.Edit"}}"><i class="fas fa-pen"></i></button>
@@ -206,7 +207,7 @@
                           </div>
                           <div class="meta">
                             <strong>{{name}}</strong>
-                            <span>{{trackCount}} {{localize "TS_DJ_MUSIC.Common.TracksLower"}} | {{localize "TS_DJ_MUSIC.Common.LoopLower"}}: {{#if loop}}{{localize "TS_DJ_MUSIC.Common.Yes"}}{{else}}{{localize "TS_DJ_MUSIC.Common.No"}}{{/if}} | {{localize "TS_DJ_MUSIC.Common.ShuffleLower"}}: {{#if shuffle}}{{localize "TS_DJ_MUSIC.Common.Yes"}}{{else}}{{localize "TS_DJ_MUSIC.Common.No"}}{{/if}}</span>
+                            <span>{{trackCount}} {{localize "TS_DJ_MUSIC.Common.TracksLower"}} | {{localize "TS_DJ_MUSIC.Common.LoopLower"}}: {{#if loop}}{{localize "TS_DJ_MUSIC.Common.Yes"}}{{else}}{{localize "TS_DJ_MUSIC.Common.No"}}{{/if}} | {{localize "TS_DJ_MUSIC.Common.ShuffleLower"}}: {{#if shuffle}}{{localize "TS_DJ_MUSIC.Common.Yes"}}{{else}}{{localize "TS_DJ_MUSIC.Common.No"}}{{/if}}{{#if manualAdvance}} | {{localize "TS_DJ_MUSIC.Common.ManualAdvance"}}{{/if}}</span>
                           </div>
                         </div>
                         <div class="ts-dj-music-sidebar-sublist {{#if expanded}}is-open{{/if}}">

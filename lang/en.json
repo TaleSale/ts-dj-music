@@ -64,7 +64,8 @@
       "NewFolder": "New Folder",
       "DragToPlaylist": "Drag to move or add to playlist",
       "Yes": "Yes",
-      "ImportExport": "Import/Export"
+      "ImportExport": "Import/Export",
+      "ManualAdvance": "Manual advance"
     },
     "Dialogs": {
       "DeleteAllAmbiencePlaylistsContent": "<p>Delete all ambience playlists?</p>",
@@ -130,7 +131,8 @@
       "TrackRateLabel": "Default speed",
       "TrackStartLabel": "Clip start",
       "TrackStartPlaceholder": "00:03 or 3",
-      "TrackTitle": "Track"
+      "TrackTitle": "Track",
+      "ManualAdvanceHint": "Repeat the current track until you press Next. Changes apply when playback starts."
     },
     "Notes": {
       "NoAmbiencePlaylistsYet": "No ambience playlists yet.",
@@ -164,7 +166,8 @@
       "SettingsReset": "TS-DJ-MUSIC: settings reset.",
       "StorageApplyFailed": "TS-DJ-MUSIC: failed to apply changes to playlist storage.",
       "TrackFileMissing": "TS-DJ-MUSIC: no file is set for this track.",
-      "TrackNotFound": "TS-DJ-MUSIC: track not found."
+      "TrackNotFound": "TS-DJ-MUSIC: track not found.",
+      "JournalPlaybackFailed": "TS-DJ: failed to play the journal track."
     },
     "Settings": {
       "AllowMultipleAmbience": "Allow multiple ambience",
